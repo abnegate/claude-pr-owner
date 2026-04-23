@@ -141,15 +141,32 @@ jobs:
             return 1
           }
 
+          # True when the given commit was authored by this workflow's own bot.
+          # Used to suppress improvement/healing when the triggering push was
+          # produced by a previous claude run — otherwise the push fires
+          # pull_request.synchronize (or a fresh workflow_run), which re-runs
+          # improvement/healing, which commits again, looping indefinitely.
+          is_bot_commit() {
+            local sha="$1"
+            [[ -z "$sha" ]] && return 1
+            local email
+            email=$(gh api "repos/$REPO/commits/$sha" --jq '.commit.author.email' 2>/dev/null || echo "")
+            [[ "$email" == "claude-bot@users.noreply.github.com" ]]
+          }
+
           case "$EVENT_NAME" in
             pull_request)
               if [[ "$IMPROVEMENT_ENABLED" == "true" && \
                     "$PR_HEAD_REPO_FULL" == "$REPO" ]] && is_trusted "$PR_ASSOC"; then
-                tasks='["improvement"]'
-                branch="$PR_HEAD_REF"
-                pr_number="$PR_NUMBER"
-                head_sha="$PR_HEAD_SHA"
-                base_ref="$PR_BASE_REF"
+                if is_bot_commit "$PR_HEAD_SHA"; then
+                  echo "HEAD commit $PR_HEAD_SHA authored by claude[bot]; skipping improvement to avoid self-trigger loop."
+                else
+                  tasks='["improvement"]'
+                  branch="$PR_HEAD_REF"
+                  pr_number="$PR_NUMBER"
+                  head_sha="$PR_HEAD_SHA"
+                  base_ref="$PR_BASE_REF"
+                fi
               fi
               ;;
             pull_request_review)
@@ -191,10 +208,16 @@ jobs:
                     "$WR_HEAD_REPO_FULL" == "$REPO" ]]; then
                 pr_number=$(gh pr list --repo "$REPO" --head "$WR_HEAD_BRANCH" --state open --json number --jq '.[0].number')
                 if [[ -n "$pr_number" ]]; then
-                  tasks='["healing"]'
-                  branch="$WR_HEAD_BRANCH"
-                  failed_run_id="$WR_ID"
-                  head_sha=$(gh pr view "$pr_number" --repo "$REPO" --json headRefOid --jq .headRefOid)
+                  candidate_sha=$(gh pr view "$pr_number" --repo "$REPO" --json headRefOid --jq .headRefOid)
+                  if is_bot_commit "$candidate_sha"; then
+                    echo "HEAD commit $candidate_sha authored by claude[bot]; skipping healing to avoid self-trigger loop."
+                    pr_number=''
+                  else
+                    tasks='["healing"]'
+                    branch="$WR_HEAD_BRANCH"
+                    failed_run_id="$WR_ID"
+                    head_sha="$candidate_sha"
+                  fi
                 fi
               fi
               ;;
