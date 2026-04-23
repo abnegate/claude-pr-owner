@@ -269,116 +269,17 @@ jobs:
           ref: ${{ needs.plan.outputs.branch || github.ref }}
           fetch-depth: 0
 
-      - name: Checkout claude-pr-owner (for local composite actions)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: abnegate/claude-pr-owner
-          # job_workflow_sha = exact commit of THIS reusable workflow file,
-          # so the composite action we invoke below matches the workflow the
-          # caller resolved. action_ref would point at actions/checkout's SHA.
-          ref: ${{ github.job_workflow_sha }}
-          path: .claude-pr-owner
-
       - name: Configure local git identity
         run: |
           git config user.name  "claude[bot]"
           git config user.email "claude-bot@users.noreply.github.com"
 
-      - name: Diff stats (improvement)
-        if: matrix.task == 'improvement'
-        id: diff
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
-          merge_base=$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")
-          changed_files=$(git diff --name-only "$merge_base..$HEAD_SHA" | wc -l | tr -d ' ')
-          changed_lines=$(git diff --shortstat "$merge_base..$HEAD_SHA" | awk '{ ins=0; del=0; for (i=1;i<=NF;i++) { if ($i ~ /insertion/) ins=$(i-1); if ($i ~ /deletion/) del=$(i-1) } print ins + del }')
-          changed_lines=${changed_lines:-0}
-          delim="EOF_$(openssl rand -hex 16)"
-          {
-            printf 'files=%s\n' "$changed_files"
-            printf 'lines=%s\n' "$changed_lines"
-            printf 'file_list<<%s\n' "$delim"
-            git diff --name-only "$merge_base..$HEAD_SHA" | head -50
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Fetch failure logs (healing)
         if: matrix.task == 'healing'
-        id: logs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run view "$FAILED_RUN_ID" --log-failed 2>&1 | tail -200 > /tmp/ci-failure-logs.txt
-          delim="EOF_$(openssl rand -hex 16)"
-          {
-            printf 'log<<%s\n' "$delim"
-            tail -120 /tmp/ci-failure-logs.txt
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Classify complexity (improvement)
-        if: matrix.task == 'improvement'
-        id: classify-improvement
-        uses: ./.claude-pr-owner/.github/actions/classify-complexity
-        with:
-          oauth_token: ${{ secrets.oauth_token }}
-          api_key: ${{ secrets.api_key }}
-          prompt: |
-            Classify this pull request's review complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
-            simple = typo fix, docs tweak, one-file obvious bug, rename, trivial refactor, small test-only change
-            complex = multi-file change, new feature, architecture/API change, deep debugging, perf, security-sensitive, touching more than ~3 files
-
-            TITLE: ${{ github.event.pull_request.title }}
-            STATS: ${{ steps.diff.outputs.files }} files, ${{ steps.diff.outputs.lines }} lines
-            FILES:
-            ${{ steps.diff.outputs.file_list }}
-            DESCRIPTION:
-            ${{ github.event.pull_request.body }}
-
-      - name: Classify complexity (healing)
-        if: matrix.task == 'healing'
-        id: classify-healing
-        uses: ./.claude-pr-owner/.github/actions/classify-complexity
-        with:
-          oauth_token: ${{ secrets.oauth_token }}
-          api_key: ${{ secrets.api_key }}
-          prompt: |
-            Classify this CI failure's fix complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
-            simple = lint violation, formatting, obvious typo, missing import, trivial test assertion fix, single-file mistake
-            complex = compile error with unclear cause, real test failure exposing a bug, flaky infra, multi-file breakage
-
-            FAILURE LOGS (tail):
-            ${{ steps.logs.outputs.log }}
-
-      - name: Classify complexity (comments)
-        if: matrix.task == 'comments'
-        id: classify-comments
-        uses: ./.claude-pr-owner/.github/actions/classify-complexity
-        with:
-          oauth_token: ${{ secrets.oauth_token }}
-          api_key: ${{ secrets.api_key }}
-          prompt: |
-            Classify this coding task's complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
-            simple = typo fix, docs tweak, one-file obvious bug, rename, trivial refactor
-            complex = multi-file change, new feature, architecture/API change, deep debugging, touching more than ~3 files
-
-            TITLE: ${{ github.event.issue.title }}
-            REQUEST:
-            ${{ github.event.comment.body || github.event.issue.body }}
-
-      - name: Resolve model and fallback
-        id: model
-        run: |
-          case "$TASK" in
-            improvement) m='${{ steps.classify-improvement.outputs.model }}'; f='${{ steps.classify-improvement.outputs.fallback }}' ;;
-            healing)     m='${{ steps.classify-healing.outputs.model }}';     f='${{ steps.classify-healing.outputs.fallback }}' ;;
-            comments)    m='${{ steps.classify-comments.outputs.model }}';    f='${{ steps.classify-comments.outputs.fallback }}' ;;
-            bots)        m='claude-opus-4-7';                                  f='claude-sonnet-4-6' ;;
-          esac
-          echo "model=$m" >> "$GITHUB_OUTPUT"
-          echo "fallback=$f" >> "$GITHUB_OUTPUT"
 
       # Build the final prompt in a shell step so that $TASK, $PR_NUMBER, etc.
       # are expanded by bash. GitHub Actions does not run `with:` values through
@@ -497,8 +398,6 @@ jobs:
             fine — they will be applied in order by the consolidator.
           - Stage only files relevant to the task. No drive-by edits.
           - If your task produces no changes, exit cleanly with no commits.
-          - Do NOT touch the .claude-pr-owner/ directory; it is this action's
-            own checkout and not part of the consumer repo.
 
           ## Task-specific instructions
           HEADER
@@ -531,8 +430,8 @@ jobs:
           use_sticky_comment: 'false'
           show_full_output: 'true'
           claude_args: |
-            --model ${{ steps.model.outputs.model }}
-            --fallback-model ${{ steps.model.outputs.fallback }}
+            --model claude-opus-4-7
+            --fallback-model claude-sonnet-4-6
             --max-turns 50
             --dangerously-skip-permissions
           prompt: ${{ steps.prompt.outputs.prompt }}
