@@ -59,6 +59,23 @@ runs:
         # CLI doesn't see conflicting signals.
         if [[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
           unset ANTHROPIC_API_KEY
+          # The native `claude` CLI installed by install.sh does not read
+          # CLAUDE_CODE_OAUTH_TOKEN from env; it reads credentials from
+          # ~/.claude/.credentials.json. Without this file the CLI exits with
+          # "Not logged in · Please run /login" and we silently route to opus.
+          mkdir -p "$HOME/.claude"
+          umask 077
+          jq -n --arg token "$CLAUDE_CODE_OAUTH_TOKEN" '
+            {
+              claudeAiOauth: {
+                accessToken: $token,
+                refreshToken: "",
+                expiresAt: 9999999999999,
+                scopes: ["user:inference", "user:profile"]
+              }
+            }
+          ' > "$HOME/.claude/.credentials.json"
+          chmod 600 "$HOME/.claude/.credentials.json"
         fi
 
         # Force the model to emit a JSON object matching this schema — removes
