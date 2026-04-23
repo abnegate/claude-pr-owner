@@ -250,7 +250,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: abnegate/claude-pr-owner
-          ref: ${{ github.action_ref || 'main' }}
+          # job_workflow_sha = exact commit of THIS reusable workflow file,
+          # so the composite action we invoke below matches the workflow the
+          # caller resolved. action_ref would point at actions/checkout's SHA.
+          ref: ${{ github.job_workflow_sha }}
           path: .claude-pr-owner
 
       - name: Configure local git identity
