@@ -22,121 +22,68 @@ inputs:
 outputs:
   model:
     description: Selected primary model.
-    value: ${{ steps.classify.outputs.model }}
+    value: ${{ steps.select.outputs.model }}
   fallback:
     description: Fallback model.
-    value: ${{ steps.classify.outputs.fallback }}
+    value: ${{ steps.select.outputs.fallback }}
   classification:
-    description: Raw classification string ('simple', 'complex', or fallback on empty/garbage).
-    value: ${{ steps.classify.outputs.classification }}
+    description: Raw classification string ('simple', 'complex', or empty on failure).
+    value: ${{ steps.select.outputs.classification }}
 
 runs:
   using: composite
   steps:
-    - name: Install Claude CLI
-      shell: bash
-      run: |
-        if ! command -v claude >/dev/null 2>&1; then
-          curl -fsSL https://claude.ai/install.sh | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-        fi
-
-    - name: Run Haiku classification
-      id: classify
+    - name: Validate auth
       shell: bash
       env:
         CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.oauth_token }}
         ANTHROPIC_API_KEY: ${{ inputs.api_key }}
-        CLASSIFY_PROMPT: ${{ inputs.prompt }}
       run: |
-        set +e
-
         if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" && -z "$ANTHROPIC_API_KEY" ]]; then
           echo "::error::classify-complexity needs either oauth_token or api_key."
           exit 1
         fi
-        # OAuth takes precedence when both are supplied; unset the other so the
-        # CLI doesn't see conflicting signals.
-        if [[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
-          unset ANTHROPIC_API_KEY
-          # The native `claude` CLI installed by install.sh does not read
-          # CLAUDE_CODE_OAUTH_TOKEN from env; it reads credentials from
-          # ~/.claude/.credentials.json. Without this file the CLI exits with
-          # "Not logged in · Please run /login" and we silently route to opus.
-          mkdir -p "$HOME/.claude"
-          umask 077
-          jq -n --arg token "$CLAUDE_CODE_OAUTH_TOKEN" '
-            {
-              claudeAiOauth: {
-                accessToken: $token,
-                refreshToken: "",
-                expiresAt: 9999999999999,
-                scopes: ["user:inference", "user:profile"]
-              }
-            }
-          ' > "$HOME/.claude/.credentials.json"
-          chmod 600 "$HOME/.claude/.credentials.json"
-        fi
 
-        # Force the model to emit a JSON object matching this schema — removes
-        # any chance of leading/trailing prose, punctuation, or casing drift.
-        SCHEMA='{
-          "type": "object",
-          "properties": {
-            "classification": {
-              "type": "string",
-              "enum": ["simple", "complex"]
-            }
-          },
-          "required": ["classification"],
-          "additionalProperties": false
-        }'
+    # The base action uses @anthropic-ai/claude-agent-sdk, which reads
+    # CLAUDE_CODE_OAUTH_TOKEN correctly. The native `claude` CLI installed by
+    # install.sh does not, and silently fails with "Not logged in · Please run
+    # /login" when only the env token is supplied. Delegating here avoids
+    # re-implementing the SDK's auth bootstrap.
+    - name: Classify via claude-code-base-action
+      id: classify
+      uses: anthropics/claude-code-base-action@2d6abe4aa8adacaa322e24a040787cf155cf1d09 # v0.0.63
+      continue-on-error: true
+      with:
+        claude_code_oauth_token: ${{ inputs.oauth_token }}
+        anthropic_api_key: ${{ inputs.api_key }}
+        prompt: ${{ inputs.prompt }}
+        claude_args: |
+          --model claude-haiku-4-5
+          --max-turns 1
+          --dangerously-skip-permissions
+          --json-schema {"type":"object","properties":{"classification":{"type":"string","enum":["simple","complex"]}},"required":["classification"],"additionalProperties":false}
 
-        RAW=$(claude -p \
-          --model claude-haiku-4-5 \
-          --bare \
-          --max-turns 1 \
-          --tools "" \
-          --dangerously-skip-permissions \
-          --output-format json \
-          --json-schema "$SCHEMA" \
-          "$CLASSIFY_PROMPT")
-        STATUS=$?
+    - name: Select model
+      id: select
+      shell: bash
+      env:
+        STRUCTURED_OUTPUT: ${{ steps.classify.outputs.structured_output }}
+      run: |
+        classification=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.classification // empty' 2>/dev/null)
+        echo "Haiku classification: '$classification'"
 
-        if [[ $STATUS -ne 0 ]]; then
-          echo "claude CLI exited $STATUS — routing to opus."
-          echo "CLI output: $RAW"
-        fi
-
-        # With --json-schema the structured payload lands at .structured_output as a
-        # parsed object. Older builds (or runs without schema) put the response at
-        # .result as either a plain string or a stringified JSON. Try both so the
-        # action keeps working across CLI versions.
-        CLASSIFICATION=$(printf '%s' "$RAW" | jq -r '
-          (.structured_output.classification // "") as $s
-          | if $s != "" then $s
-            else ((.result // "") | fromjson? | .classification // "")
-            end
-        ' 2>/dev/null)
-
-        # Last-ditch fallback: plain .result that happens to be the literal word.
-        if [[ -z "$CLASSIFICATION" ]]; then
-          CLASSIFICATION=$(printf '%s' "$RAW" | jq -r '.result // empty' 2>/dev/null \
-            | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | head -c 20)
-        fi
-
-        echo "Haiku classification: '$CLASSIFICATION'"
-
-        # Favour opus, sonnet only when haiku explicitly says simple.
-        if [[ "$CLASSIFICATION" == "simple" ]]; then
-          MODEL="claude-sonnet-4-6"
-          FALLBACK="claude-opus-4-7"
+        # Favour opus; sonnet only when haiku explicitly says simple.
+        if [[ "$classification" == "simple" ]]; then
+          model="claude-sonnet-4-6"
+          fallback="claude-opus-4-7"
         else
-          MODEL="claude-opus-4-7"
-          FALLBACK="claude-sonnet-4-6"
+          model="claude-opus-4-7"
+          fallback="claude-sonnet-4-6"
         fi
 
-        echo "classification=$CLASSIFICATION" >> "$GITHUB_OUTPUT"
-        echo "model=$MODEL" >> "$GITHUB_OUTPUT"
-        echo "fallback=$FALLBACK" >> "$GITHUB_OUTPUT"
-        echo "Selected primary=$MODEL, fallback=$FALLBACK"
+        {
+          echo "classification=$classification"
+          echo "model=$model"
+          echo "fallback=$fallback"
+        } >> "$GITHUB_OUTPUT"
+        echo "Selected primary=$model, fallback=$fallback"
