@@ -40,9 +40,16 @@ on:
         type: string
         default: "OWNER,MEMBER,COLLABORATOR"
     secrets:
-      claude_code_oauth_token:
-        description: Claude Code OAuth token. Obtain via `claude setup-token`.
-        required: true
+      oauth_token:
+        description: >
+          Claude Code OAuth token (obtain via `claude setup-token`). Provide
+          this OR api_key — at least one is required.
+        required: false
+      api_key:
+        description: >
+          Anthropic API key. Provide this OR oauth_token — at least one is
+          required.
+        required: false
 
 jobs:
   plan:
@@ -61,6 +68,16 @@ jobs:
       reviewer: ${{ steps.plan.outputs.reviewer }}
       failed_run_id: ${{ steps.plan.outputs.failed_run_id }}
     steps:
+      - name: Require an auth secret
+        env:
+          HAS_OAUTH: ${{ secrets.oauth_token != '' }}
+          HAS_API_KEY: ${{ secrets.api_key != '' }}
+        run: |
+          if [[ "$HAS_OAUTH" != "true" && "$HAS_API_KEY" != "true" ]]; then
+            echo "::error::claude-pr-owner requires either secrets.oauth_token or secrets.api_key."
+            exit 1
+          fi
+
       - name: Decide tasks
         id: plan
         env:
@@ -280,7 +297,8 @@ jobs:
         id: classify-improvement
         uses: ./.claude-pr-owner/.github/actions/classify-complexity
         with:
-          oauth-token: ${{ secrets.claude_code_oauth_token }}
+          oauth_token: ${{ secrets.oauth_token }}
+          api_key: ${{ secrets.api_key }}
           prompt: |
             Classify this pull request's review complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
             simple = typo fix, docs tweak, one-file obvious bug, rename, trivial refactor, small test-only change
@@ -298,7 +316,8 @@ jobs:
         id: classify-healing
         uses: ./.claude-pr-owner/.github/actions/classify-complexity
         with:
-          oauth-token: ${{ secrets.claude_code_oauth_token }}
+          oauth_token: ${{ secrets.oauth_token }}
+          api_key: ${{ secrets.api_key }}
           prompt: |
             Classify this CI failure's fix complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
             simple = lint violation, formatting, obvious typo, missing import, trivial test assertion fix, single-file mistake
@@ -312,7 +331,8 @@ jobs:
         id: classify-comments
         uses: ./.claude-pr-owner/.github/actions/classify-complexity
         with:
-          oauth-token: ${{ secrets.claude_code_oauth_token }}
+          oauth_token: ${{ secrets.oauth_token }}
+          api_key: ${{ secrets.api_key }}
           prompt: |
             Classify this coding task's complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
             simple = typo fix, docs tweak, one-file obvious bug, rename, trivial refactor
@@ -341,7 +361,8 @@ jobs:
           IS_BODY: ${{ github.event.issue.body }}
           IS_TITLE: ${{ github.event.issue.title }}
         with:
-          claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
+          claude_code_oauth_token: ${{ secrets.oauth_token }}
+          anthropic_api_key: ${{ secrets.api_key }}
           plugin_marketplaces: |
             https://github.com/anthropics/claude-code.git
             https://github.com/abnegate/claudes.git

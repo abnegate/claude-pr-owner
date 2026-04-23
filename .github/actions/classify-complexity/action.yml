@@ -5,9 +5,14 @@ description: >
   explicitly says 'simple'; any other output routes to opus.
 
 inputs:
-  oauth-token:
-    description: Claude Code OAuth token.
-    required: true
+  oauth_token:
+    description: Claude Code OAuth token. Provide this OR api_key.
+    required: false
+    default: ""
+  api_key:
+    description: Anthropic API key. Provide this OR oauth_token.
+    required: false
+    default: ""
   prompt:
     description: >
       Full classification prompt. Must instruct Haiku to reply with EXACTLY
@@ -40,10 +45,21 @@ runs:
       id: classify
       shell: bash
       env:
-        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.oauth-token }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.oauth_token }}
+        ANTHROPIC_API_KEY: ${{ inputs.api_key }}
         CLASSIFY_PROMPT: ${{ inputs.prompt }}
       run: |
         set +e
+
+        if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" && -z "$ANTHROPIC_API_KEY" ]]; then
+          echo "::error::classify-complexity needs either oauth_token or api_key."
+          exit 1
+        fi
+        # OAuth takes precedence when both are supplied; unset the other so the
+        # CLI doesn't see conflicting signals.
+        if [[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
+          unset ANTHROPIC_API_KEY
+        fi
 
         # Force the model to emit a JSON object matching this schema — removes
         # any chance of leading/trailing prose, punctuation, or casing drift.

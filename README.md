@@ -35,7 +35,8 @@ jobs:
   claude:
     uses: abnegate/claude-pr-owner/.github/workflows/orchestrator.yml@main
     secrets:
-      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # api_key: ${{ secrets.ANTHROPIC_API_KEY }}  # alternative to oauth_token
     # All task flags default to true; set any to false to disable.
     # with:
     #   improvement: true
@@ -46,7 +47,12 @@ jobs:
     #   trusted_associations: "OWNER,MEMBER,COLLABORATOR"
 ```
 
-Only the OAuth token is required. Get one with `claude setup-token` and add it as a repo secret named `CLAUDE_CODE_OAUTH_TOKEN`.
+Provide **one** of the two auth secrets:
+
+- `oauth_token` — from `claude setup-token` (recommended; uses your subscription).
+- `api_key` — Anthropic API key (pay-per-request).
+
+If both are set, `oauth_token` wins.
 
 ## Feature flags
 
