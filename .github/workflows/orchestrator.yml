@@ -1,0 +1,594 @@
+name: Claude PR Owner
+
+# Reusable orchestrator. One workflow reacts to every trigger the caller
+# subscribes to, decides which task(s) apply, runs them in parallel, and
+# serializes only the final push. Callers subscribe to the events they want
+# (pull_request, pull_request_review, issue_comment, pull_request_review_comment,
+# issues, workflow_run) and call this workflow from each event.
+
+on:
+  workflow_call:
+    inputs:
+      improvement:
+        description: Run the improvement task (code review + fix on PR push).
+        type: boolean
+        default: true
+      healing:
+        description: Run the healing task (auto-fix CI failures).
+        type: boolean
+        default: true
+      bots:
+        description: Run the bots task (triage bot reviews, fix + resolve threads).
+        type: boolean
+        default: true
+      comments:
+        description: Run the comments task (react to @claude mentions).
+        type: boolean
+        default: true
+      bot_allowlist:
+        description: >
+          Comma-separated list of bot logins whose reviews trigger the bots
+          task. Supports wildcards via shell-style case matching on suffix.
+          Defaults cover CodeRabbit, Greptile, Codex, and all Copilot variants.
+        type: string
+        default: "coderabbitai[bot],greptile-apps[bot],greptileai[bot],codex[bot],copilot-*,github-copilot*"
+      trusted_associations:
+        description: >
+          Comma-separated list of GitHub author_association values that may
+          trigger @claude responses and improvement runs. Defaults to
+          OWNER,MEMBER,COLLABORATOR (never NONE, CONTRIBUTOR, or FIRST_TIME*).
+        type: string
+        default: "OWNER,MEMBER,COLLABORATOR"
+    secrets:
+      claude_code_oauth_token:
+        description: Claude Code OAuth token. Obtain via `claude setup-token`.
+        required: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      tasks: ${{ steps.plan.outputs.tasks }}
+      branch: ${{ steps.plan.outputs.branch }}
+      pr_number: ${{ steps.plan.outputs.pr_number }}
+      head_sha: ${{ steps.plan.outputs.head_sha }}
+      base_ref: ${{ steps.plan.outputs.base_ref }}
+      review_id: ${{ steps.plan.outputs.review_id }}
+      reviewer: ${{ steps.plan.outputs.reviewer }}
+      failed_run_id: ${{ steps.plan.outputs.failed_run_id }}
+    steps:
+      - name: Decide tasks
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REPO_FULL: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_ASSOC: ${{ github.event.pull_request.author_association }}
+          REVIEW_USER: ${{ github.event.review.user.login }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          COMMENT_ASSOC: ${{ github.event.comment.author_association }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_PR_URL: ${{ github.event.issue.pull_request.url }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_ASSOC: ${{ github.event.issue.author_association }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_EVENT: ${{ github.event.workflow_run.event }}
+          WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_HEAD_REPO_FULL: ${{ github.event.workflow_run.head_repository.full_name }}
+          WR_ID: ${{ github.event.workflow_run.id }}
+          IMPROVEMENT_ENABLED: ${{ inputs.improvement }}
+          HEALING_ENABLED: ${{ inputs.healing }}
+          BOTS_ENABLED: ${{ inputs.bots }}
+          COMMENTS_ENABLED: ${{ inputs.comments }}
+          BOT_ALLOWLIST: ${{ inputs.bot_allowlist }}
+          TRUSTED_ASSOCS: ${{ inputs.trusted_associations }}
+        run: |
+          set -euo pipefail
+          tasks='[]'
+          branch=''
+          pr_number=''
+          head_sha=''
+          base_ref=''
+          review_id=''
+          reviewer=''
+          failed_run_id=''
+
+          is_trusted() {
+            IFS=',' read -ra allowed <<<"$TRUSTED_ASSOCS"
+            for a in "${allowed[@]}"; do
+              [[ "$1" == "${a// /}" ]] && return 0
+            done
+            return 1
+          }
+
+          is_review_bot() {
+            IFS=',' read -ra allowed <<<"$BOT_ALLOWLIST"
+            local login="$1"
+            for pattern in "${allowed[@]}"; do
+              pattern="${pattern// /}"
+              case "$login" in
+                $pattern) return 0 ;;
+              esac
+            done
+            return 1
+          }
+
+          case "$EVENT_NAME" in
+            pull_request)
+              if [[ "$IMPROVEMENT_ENABLED" == "true" && \
+                    "$PR_HEAD_REPO_FULL" == "$REPO" ]] && is_trusted "$PR_ASSOC"; then
+                tasks='["improvement"]'
+                branch="$PR_HEAD_REF"
+                pr_number="$PR_NUMBER"
+                head_sha="$PR_HEAD_SHA"
+                base_ref="$PR_BASE_REF"
+              fi
+              ;;
+            pull_request_review)
+              if [[ "$BOTS_ENABLED" == "true" && \
+                    "$PR_HEAD_REPO_FULL" == "$REPO" ]] && is_review_bot "$REVIEW_USER"; then
+                tasks='["bots"]'
+                branch="$PR_HEAD_REF"
+                pr_number="$PR_NUMBER"
+                head_sha="$PR_HEAD_SHA"
+                review_id="$REVIEW_ID"
+                reviewer="$REVIEW_USER"
+              fi
+              ;;
+            issue_comment|pull_request_review_comment)
+              if [[ "$COMMENTS_ENABLED" == "true" ]] && is_trusted "$COMMENT_ASSOC" && \
+                 [[ "$COMMENT_BODY" == *"@claude"* ]]; then
+                if [[ -n "$PR_HEAD_REF" ]]; then
+                  branch="$PR_HEAD_REF"
+                  head_sha="$PR_HEAD_SHA"
+                elif [[ -n "$ISSUE_PR_URL" ]]; then
+                  branch=$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json headRefName --jq .headRefName)
+                  head_sha=$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
+                fi
+                tasks='["comments"]'
+                pr_number="$ISSUE_NUMBER"
+              fi
+              ;;
+            issues)
+              if [[ "$COMMENTS_ENABLED" == "true" ]] && is_trusted "$ISSUE_ASSOC" && \
+                 { [[ "$ISSUE_TITLE" == *"@claude"* ]] || [[ "$ISSUE_BODY" == *"@claude"* ]]; }; then
+                tasks='["comments"]'
+                pr_number="$ISSUE_NUMBER"
+              fi
+              ;;
+            workflow_run)
+              if [[ "$HEALING_ENABLED" == "true" && \
+                    "$WR_CONCLUSION" == "failure" && \
+                    "$WR_EVENT" == "pull_request" && \
+                    "$WR_HEAD_REPO_FULL" == "$REPO" ]]; then
+                pr_number=$(gh pr list --repo "$REPO" --head "$WR_HEAD_BRANCH" --state open --json number --jq '.[0].number')
+                if [[ -n "$pr_number" ]]; then
+                  tasks='["healing"]'
+                  branch="$WR_HEAD_BRANCH"
+                  failed_run_id="$WR_ID"
+                  head_sha=$(gh pr view "$pr_number" --repo "$REPO" --json headRefOid --jq .headRefOid)
+                fi
+              fi
+              ;;
+          esac
+
+          {
+            echo "tasks=$tasks"
+            echo "branch=$branch"
+            echo "pr_number=$pr_number"
+            echo "head_sha=$head_sha"
+            echo "base_ref=$base_ref"
+            echo "review_id=$review_id"
+            echo "reviewer=$reviewer"
+            echo "failed_run_id=$failed_run_id"
+          } >> "$GITHUB_OUTPUT"
+          echo "Planned: tasks=$tasks branch=$branch pr=$pr_number"
+
+  run:
+    name: Run ${{ matrix.task }}
+    needs: plan
+    if: needs.plan.outputs.tasks != '[]' && needs.plan.outputs.tasks != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: ${{ fromJSON(needs.plan.outputs.tasks) }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+      id-token: write
+    env:
+      TASK: ${{ matrix.task }}
+      REPO: ${{ github.repository }}
+      REPO_OWNER: ${{ github.repository_owner }}
+      REPO_NAME: ${{ github.event.repository.name }}
+      PR_NUMBER: ${{ needs.plan.outputs.pr_number }}
+      HEAD_BRANCH: ${{ needs.plan.outputs.branch }}
+      HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
+      BASE_REF: ${{ needs.plan.outputs.base_ref }}
+      REVIEW_ID: ${{ needs.plan.outputs.review_id }}
+      REVIEWER: ${{ needs.plan.outputs.reviewer }}
+      FAILED_RUN_ID: ${{ needs.plan.outputs.failed_run_id }}
+    steps:
+      - name: Checkout consumer PR branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.plan.outputs.branch || github.ref }}
+          fetch-depth: 0
+
+      - name: Checkout claude-pr-owner (for local composite actions)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: abnegate/claude-pr-owner
+          ref: ${{ github.action_ref || 'main' }}
+          path: .claude-pr-owner
+
+      - name: Configure local git identity
+        run: |
+          git config user.name  "claude[bot]"
+          git config user.email "claude-bot@users.noreply.github.com"
+
+      - name: Diff stats (improvement)
+        if: matrix.task == 'improvement'
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          merge_base=$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")
+          changed_files=$(git diff --name-only "$merge_base..$HEAD_SHA" | wc -l | tr -d ' ')
+          changed_lines=$(git diff --shortstat "$merge_base..$HEAD_SHA" | awk '{ ins=0; del=0; for (i=1;i<=NF;i++) { if ($i ~ /insertion/) ins=$(i-1); if ($i ~ /deletion/) del=$(i-1) } print ins + del }')
+          changed_lines=${changed_lines:-0}
+          delim="EOF_$(openssl rand -hex 16)"
+          {
+            printf 'files=%s\n' "$changed_files"
+            printf 'lines=%s\n' "$changed_lines"
+            printf 'file_list<<%s\n' "$delim"
+            git diff --name-only "$merge_base..$HEAD_SHA" | head -50
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fetch failure logs (healing)
+        if: matrix.task == 'healing'
+        id: logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run view "$FAILED_RUN_ID" --log-failed 2>&1 | tail -200 > /tmp/ci-failure-logs.txt
+          delim="EOF_$(openssl rand -hex 16)"
+          {
+            printf 'log<<%s\n' "$delim"
+            tail -120 /tmp/ci-failure-logs.txt
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Classify complexity (improvement)
+        if: matrix.task == 'improvement'
+        id: classify-improvement
+        uses: ./.claude-pr-owner/.github/actions/classify-complexity
+        with:
+          oauth-token: ${{ secrets.claude_code_oauth_token }}
+          prompt: |
+            Classify this pull request's review complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
+            simple = typo fix, docs tweak, one-file obvious bug, rename, trivial refactor, small test-only change
+            complex = multi-file change, new feature, architecture/API change, deep debugging, perf, security-sensitive, touching more than ~3 files
+
+            TITLE: ${{ github.event.pull_request.title }}
+            STATS: ${{ steps.diff.outputs.files }} files, ${{ steps.diff.outputs.lines }} lines
+            FILES:
+            ${{ steps.diff.outputs.file_list }}
+            DESCRIPTION:
+            ${{ github.event.pull_request.body }}
+
+      - name: Classify complexity (healing)
+        if: matrix.task == 'healing'
+        id: classify-healing
+        uses: ./.claude-pr-owner/.github/actions/classify-complexity
+        with:
+          oauth-token: ${{ secrets.claude_code_oauth_token }}
+          prompt: |
+            Classify this CI failure's fix complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
+            simple = lint violation, formatting, obvious typo, missing import, trivial test assertion fix, single-file mistake
+            complex = compile error with unclear cause, real test failure exposing a bug, flaky infra, multi-file breakage
+
+            FAILURE LOGS (tail):
+            ${{ steps.logs.outputs.log }}
+
+      - name: Classify complexity (comments)
+        if: matrix.task == 'comments'
+        id: classify-comments
+        uses: ./.claude-pr-owner/.github/actions/classify-complexity
+        with:
+          oauth-token: ${{ secrets.claude_code_oauth_token }}
+          prompt: |
+            Classify this coding task's complexity. Reply with EXACTLY one lowercase word: 'simple' or 'complex'.
+            simple = typo fix, docs tweak, one-file obvious bug, rename, trivial refactor
+            complex = multi-file change, new feature, architecture/API change, deep debugging, touching more than ~3 files
+
+            TITLE: ${{ github.event.issue.title }}
+            REQUEST:
+            ${{ github.event.comment.body || github.event.issue.body }}
+
+      - name: Resolve model and fallback
+        id: model
+        run: |
+          case "$TASK" in
+            improvement) m='${{ steps.classify-improvement.outputs.model }}'; f='${{ steps.classify-improvement.outputs.fallback }}' ;;
+            healing)     m='${{ steps.classify-healing.outputs.model }}';     f='${{ steps.classify-healing.outputs.fallback }}' ;;
+            comments)    m='${{ steps.classify-comments.outputs.model }}';    f='${{ steps.classify-comments.outputs.fallback }}' ;;
+            bots)        m='claude-opus-4-7';                                  f='claude-sonnet-4-6' ;;
+          esac
+          echo "model=$m" >> "$GITHUB_OUTPUT"
+          echo "fallback=$f" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude for ${{ matrix.task }}
+        uses: anthropics/claude-code-action@b4d67413279fc18c6e5de930ae307c4f108714eb # v1.0.104
+        env:
+          CR_BODY: ${{ github.event.comment.body }}
+          IS_BODY: ${{ github.event.issue.body }}
+          IS_TITLE: ${{ github.event.issue.title }}
+        with:
+          claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
+          plugin_marketplaces: |
+            https://github.com/anthropics/claude-code.git
+            https://github.com/abnegate/claudes.git
+          plugins: |
+            code-review@claude-code-plugins
+            skills@claudes
+          use_commit_signing: 'false'
+          use_sticky_comment: 'false'
+          show_full_output: 'true'
+          claude_args: |
+            --model ${{ steps.model.outputs.model }}
+            --fallback-model ${{ steps.model.outputs.fallback }}
+            --max-turns 50
+            --dangerously-skip-permissions
+          prompt: |
+            You are running as task "$TASK" on PR #$PR_NUMBER in $REPO.
+            Branch: $HEAD_BRANCH at commit $HEAD_SHA.
+
+            ## Hard rules for every task
+            - DO NOT push. DO NOT call `git push`. This job lacks write
+              permission; pushing will fail. The orchestrator consolidates and
+              pushes at the end.
+            - Commit changes LOCALLY with clear messages. Multiple commits are
+              fine — they will be applied in order by the consolidator.
+            - Stage only files relevant to the task. No drive-by edits.
+            - If your task produces no changes, exit cleanly with no commits.
+            - Do NOT touch the .claude-pr-owner/ directory; it is this action's
+              own checkout and not part of the consumer repo.
+
+            ## Task-specific instructions
+            $( case "$TASK" in
+               improvement) cat <<'IMPROVE'
+              Run `/code-review:code-review` for CRITICAL/HIGH/MEDIUM findings
+              (skip low/nits). For each finding: read the cited file, verify,
+              fix. Group by file; fan out worktree subagents per finding where
+              sensible; same-file findings share an agent.
+
+              After fixes, post an inline review:
+                build /tmp/review.json with event=COMMENT, body="## Code Review ...",
+                  comments=[{path,line,body:"**[SEVERITY]** ..."}]
+                gh api repos/$REPO/pulls/$PR_NUMBER/reviews --input /tmp/review.json
+
+              Then COMMIT the fixes locally with message:
+                "(fix): address review findings — X HIGH, Y MEDIUM"
+              If zero findings: post "No critical/high/medium findings." and
+              STOP without committing.
+            IMPROVE ;;
+               healing) cat <<'HEAL'
+              CI failed on run $FAILED_RUN_ID. Logs are at /tmp/ci-failure-logs.txt.
+              1. Identify the root cause from the logs.
+              2. Read CLAUDE.md for build/test/lint conventions.
+              3. Fix the issue.
+              4. Verify by re-running the failed step.
+              5. Post a PR comment explaining what failed and what you fixed:
+                 gh pr comment $PR_NUMBER --repo $REPO --body "..."
+              6. COMMIT LOCALLY with message: "(fix): CI — <short description>"
+              If flaky: comment and exit without committing.
+            HEAL ;;
+               bots) cat <<'BOTS'
+              Reviewer $REVIEWER posted review $REVIEW_ID. Triage and fix.
+              1. Fetch comments:
+                 gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID/comments" > /tmp/review-comments.json
+              2. Fetch thread IDs via GraphQL reviewThreads(first:100) and keep
+                 threads whose first comment's pullRequestReview.databaseId
+                 equals $REVIEW_ID.
+              3. For each finding, read the cited code and classify LEGIT or SKIP.
+              4. Fix LEGIT in parallel worktree agents (same-file → same agent).
+              5. COMMIT LOCALLY with message:
+                 "(fix): address $REVIEWER findings"
+                 Body: one bullet per finding with path:line.
+              6. Write side-data for the consolidator to act on AFTER push:
+                 mkdir -p $GITHUB_WORKSPACE/.claude-artifacts
+                 $GITHUB_WORKSPACE/.claude-artifacts/threads-to-resolve.json
+                     = ["THREAD_ID_1","THREAD_ID_2",...]
+                 $GITHUB_WORKSPACE/.claude-artifacts/threads-to-reply.json
+                     = [{"parent_comment_id":123,"body":"<reason>"}]
+                 Only resolve threads for findings you actually fixed. For
+                 SKIPPED findings, add a specific reply and leave unresolved.
+              If zero inline comments: acknowledge and exit.
+            BOTS ;;
+               comments) cat <<'COMMENTS'
+              A trusted user invoked @claude. The request is the comment or
+              issue body. Read it, take the action requested, and COMMIT any
+              changes LOCALLY. Engage plugin skills as needed.
+              Request body:
+              "$CR_BODY$IS_BODY"
+              If informational only, reply via gh pr comment / gh issue comment
+              and exit without committing.
+            COMMENTS ;;
+              esac )
+
+      - name: Package patch artifact
+        id: pkg
+        run: |
+          mkdir -p /tmp/patch
+          if [[ -z "$(git log "origin/$HEAD_BRANCH..HEAD" --oneline 2>/dev/null)" ]]; then
+            echo "No commits produced by task $TASK — skipping artifact."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git format-patch "origin/$HEAD_BRANCH..HEAD" -o /tmp/patch
+          if [[ -d "$GITHUB_WORKSPACE/.claude-artifacts" ]]; then
+            cp -r "$GITHUB_WORKSPACE/.claude-artifacts" /tmp/patch/side
+          fi
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          ls -la /tmp/patch
+
+      - name: Upload patch artifact
+        if: steps.pkg.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: patch-${{ matrix.task }}
+          path: /tmp/patch
+          retention-days: 1
+
+  consolidate:
+    needs: [plan, run]
+    if: |
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.plan.outputs.tasks != '[]' &&
+      needs.plan.outputs.tasks != '' &&
+      needs.plan.outputs.branch != ''
+    runs-on: ubuntu-latest
+    concurrency:
+      group: claude-push-${{ needs.plan.outputs.branch }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ needs.plan.outputs.pr_number }}
+      HEAD_BRANCH: ${{ needs.plan.outputs.branch }}
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.plan.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "claude[bot]"
+          git config user.email "claude-bot@users.noreply.github.com"
+
+      - name: Rebase onto latest origin
+        run: |
+          git fetch origin "$HEAD_BRANCH"
+          git reset --hard "origin/$HEAD_BRANCH"
+
+      - name: Download all patch artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: /tmp/artifacts
+          pattern: patch-*
+
+      - name: Apply patches in order
+        id: apply
+        run: |
+          set -uo pipefail
+          any_applied=false
+          declare -a applied_tasks=()
+          declare -a failed_tasks=()
+
+          for task in healing improvement bots comments; do
+            dir="/tmp/artifacts/patch-$task"
+            [[ -d "$dir" ]] || continue
+            mapfile -t patches < <(find "$dir" -maxdepth 1 -name '*.patch' | sort)
+            [[ ${#patches[@]} -gt 0 ]] || continue
+
+            echo "::group::Applying $task patches"
+            if git am --3way "${patches[@]}"; then
+              applied_tasks+=("$task")
+              any_applied=true
+            else
+              echo "Conflict applying $task — aborting and continuing."
+              git am --abort || true
+              failed_tasks+=("$task")
+            fi
+            echo "::endgroup::"
+          done
+
+          {
+            echo "any_applied=$any_applied"
+            printf 'applied=%s\n' "${applied_tasks[*]}"
+            printf 'failed=%s\n'  "${failed_tasks[*]}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push
+        if: steps.apply.outputs.any_applied == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPLIED: ${{ steps.apply.outputs.applied }}
+        run: |
+          before_sha=$(git rev-parse "origin/$HEAD_BRANCH")
+          after_sha=$(git rev-parse HEAD)
+          if [[ "$before_sha" == "$after_sha" ]]; then
+            echo "No-op after rebase — skipping push."
+            exit 0
+          fi
+          git push origin "HEAD:$HEAD_BRANCH"
+          compare_url="https://github.com/$REPO/compare/$before_sha...$after_sha"
+          body=$(printf 'Claude pushed fixes from: **%s**\n\n%s' "$APPLIED" "$compare_url")
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" || true
+          fi
+
+      - name: Report conflicts
+        if: steps.apply.outputs.failed != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FAILED: ${{ steps.apply.outputs.failed }}
+        run: |
+          body=$(printf 'Claude could not apply patches from: **%s** (merge conflicts with current branch tip). These tasks need manual attention.' "$FAILED")
+          if [[ -n "$PR_NUMBER" ]]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" || true
+          fi
+
+      - name: Resolve / reply on bot-review threads
+        if: contains(steps.apply.outputs.applied, 'bots')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          side="/tmp/artifacts/patch-bots/side"
+          [[ -d "$side" ]] || { echo "No bots side-data — nothing to resolve."; exit 0; }
+
+          if [[ -f "$side/threads-to-resolve.json" ]]; then
+            jq -r '.[]' "$side/threads-to-resolve.json" | while read -r thread_id; do
+              [[ -z "$thread_id" ]] && continue
+              gh api graphql -f query='
+                mutation($threadId:ID!) {
+                  resolveReviewThread(input:{threadId:$threadId}) {
+                    thread { id isResolved }
+                  }
+                }' -F threadId="$thread_id" || echo "Failed to resolve $thread_id"
+            done
+          fi
+
+          if [[ -f "$side/threads-to-reply.json" ]]; then
+            jq -c '.[]' "$side/threads-to-reply.json" | while read -r reply; do
+              parent=$(jq -r '.parent_comment_id' <<<"$reply")
+              body=$(jq -r '.body' <<<"$reply")
+              [[ -z "$parent" || "$parent" == "null" ]] && continue
+              gh api "repos/$REPO/pulls/$PR_NUMBER/comments" \
+                -F body="$body" -F in_reply_to="$parent" || echo "Failed to reply to $parent"
+            done
+          fi
