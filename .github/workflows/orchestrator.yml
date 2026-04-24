@@ -300,6 +300,14 @@ jobs:
           fix. Group by file; fan out worktree subagents per finding where
           sensible; same-file findings share an agent.
 
+          OVERRIDE to the skip-check in step 1 of /code-review:code-review:
+          a prior Claude comment on this PR is NOT grounds to skip. Every
+          `pull_request.synchronize` event adds new commits that need their
+          own review. Scope the review to commits pushed since the most
+          recent "## Code Review" comment by claude[bot]; if there is none,
+          review the full PR diff vs __BASE_REF__. Only the closed/draft
+          conditions still cause a skip.
+
           After fixes, post an inline review:
             build /tmp/review.json with event=COMMENT, body="## Code Review ...",
               comments=[{path,line,body:"**[SEVERITY]** ..."}]
@@ -313,6 +321,7 @@ jobs:
           )
               task_block=${task_block//__REPO__/$REPO}
               task_block=${task_block//__PR_NUMBER__/$PR_NUMBER}
+              task_block=${task_block//__BASE_REF__/$BASE_REF}
               ;;
             healing)
               task_block=$(cat <<'HEAL'
