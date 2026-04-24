@@ -50,6 +50,16 @@ on:
           Anthropic API key. Provide this OR oauth_token — at least one is
           required.
         required: false
+      push_token:
+        description: >
+          PAT or GitHub App token with `contents: write` used by the
+          consolidator to push Claude's commits. Required if you want
+          downstream workflows (Tests, CodeQL, Linter) to run on Claude's
+          commits — GitHub deliberately suppresses workflow_run / synchronize
+          triggers for pushes authenticated with the built-in GITHUB_TOKEN.
+          If omitted, the consolidator falls back to GITHUB_TOKEN and the
+          push will not trigger new workflow runs.
+        required: false
 
 jobs:
   plan:
@@ -492,7 +502,11 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.branch }}
           fetch-depth: 0
-          token: ${{ github.token }}
+          # Prefer a caller-supplied PAT so the push triggers downstream
+          # workflows. GITHUB_TOKEN would still work for the push itself,
+          # but GitHub suppresses workflow_run/synchronize events for
+          # commits pushed with it.
+          token: ${{ secrets.push_token != '' && secrets.push_token || github.token }}
 
       - name: Configure git identity
         run: |
@@ -545,14 +559,21 @@ jobs:
       - name: Push
         if: steps.apply.outputs.any_applied == 'true'
         env:
+          # GH_TOKEN stays the built-in token — we only use `gh` here for
+          # posting a PR comment, which does not benefit from the PAT path
+          # and keeps the comment attributed to github-actions[bot].
           GH_TOKEN: ${{ github.token }}
           APPLIED: ${{ steps.apply.outputs.applied }}
+          HAS_PUSH_TOKEN: ${{ secrets.push_token != '' }}
         run: |
           before_sha=$(git rev-parse "origin/$HEAD_BRANCH")
           after_sha=$(git rev-parse HEAD)
           if [[ "$before_sha" == "$after_sha" ]]; then
             echo "No-op after rebase — skipping push."
             exit 0
+          fi
+          if [[ "$HAS_PUSH_TOKEN" != "true" ]]; then
+            echo "::warning::No push_token secret supplied; pushing with GITHUB_TOKEN. Downstream workflows (Tests, CodeQL, etc.) will NOT run on this commit. Set secrets.push_token to a PAT with contents:write to get CI coverage on Claude's pushes."
           fi
           git push origin "HEAD:$HEAD_BRANCH"
           compare_url="https://github.com/$REPO/compare/$before_sha...$after_sha"
