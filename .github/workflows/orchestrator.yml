@@ -295,28 +295,26 @@ jobs:
           case "$TASK" in
             improvement)
               task_block=$(cat <<'IMPROVE'
-          Run `/code-review:code-review` for CRITICAL/HIGH/MEDIUM findings
-          (skip low/nits). For each finding: read the cited file, verify,
-          fix. Group by file; fan out worktree subagents per finding where
-          sensible; same-file findings share an agent.
+          Run `/skills:improve` to review the PR diff (vs __BASE_REF__) and
+          fix every CRITICAL and WARNING finding. /skills:improve handles
+          the full loop: parallel per-dimension review, parallel worktree
+          fixes, consolidation, verification, and local commits. Run one
+          cycle; do not pass a cycle count argument.
 
-          OVERRIDE to the skip-check in step 1 of /code-review:code-review:
-          a prior Claude comment on this PR is NOT grounds to skip. Every
-          `pull_request.synchronize` event adds new commits that need their
-          own review. Scope the review to commits pushed since the most
-          recent "## Code Review" comment by claude[bot]; if there is none,
-          review the full PR diff vs __BASE_REF__. Only the closed/draft
-          conditions still cause a skip.
+          /skills:improve has no "skip if Claude already commented" gate,
+          so every push gets a fresh pass scoped to its diff.
 
-          After fixes, post an inline review:
-            build /tmp/review.json with event=COMMENT, body="## Code Review ...",
+          After /skills:improve finishes, post an inline review summary
+          so the PR author sees what Claude found and changed:
+            build /tmp/review.json with event=COMMENT,
+              body="## Code Review\n\n<per-dimension summary>",
               comments=[{path,line,body:"**[SEVERITY]** ..."}]
             gh api repos/__REPO__/pulls/__PR_NUMBER__/reviews --input /tmp/review.json
 
-          Then COMMIT the fixes locally with message:
-            "(fix): address review findings — X HIGH, Y MEDIUM"
-          If zero findings: post "No critical/high/medium findings." and
-          STOP without committing.
+          If /skills:improve reports zero CRITICAL/WARNING issues: post
+          "No critical/warning findings." via `gh pr comment` and STOP
+          without committing. The local commits produced by /skills:improve
+          are packaged as an artifact and pushed by the consolidator job.
           IMPROVE
           )
               task_block=${task_block//__REPO__/$REPO}
