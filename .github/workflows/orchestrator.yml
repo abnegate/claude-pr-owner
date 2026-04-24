@@ -432,7 +432,6 @@ jobs:
           claude_args: |
             --model claude-opus-4-7
             --fallback-model claude-sonnet-4-6
-            --max-turns 50
             --dangerously-skip-permissions
           prompt: ${{ steps.prompt.outputs.prompt }}
 
