@@ -1,0 +1,23 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install PyYAML
+        run: sudo apt-get update && sudo apt-get install -y python3-yaml
+      - name: Run planner tests
+        run: bash test/plan.sh
+      - name: Install actionlint
+        run: |
+          version=$(curl -fsSL https://api.github.com/repos/rhysd/actionlint/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+          curl -fsSL -o /tmp/actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/${version}/actionlint_${version#v}_linux_amd64.tar.gz"
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+      - name: Lint workflows
+        run: /tmp/actionlint -shellcheck= .github/workflows/orchestrator.yml .github/workflows/test.yml

@@ -25,11 +25,20 @@ on:
         description: Run the comments task (react to @claude mentions).
         type: boolean
         default: true
+      review:
+        description: >
+          On pull_request, post a code review as comments and stop. Does not
+          commit, push, resolve threads, reply, approve, or request changes.
+          Off by default so existing callers keep the improvement task's
+          review-and-fix behavior. Set improvement to false for comments only.
+        type: boolean
+        default: false
       bot_allowlist:
         description: >
           Comma-separated list of bot logins whose reviews trigger the bots
-          task. Supports wildcards via shell-style case matching on suffix.
-          Defaults cover CodeRabbit, Greptile, Codex, and all Copilot variants.
+          task. * and ? are wildcards. Brackets are literal, so a name like
+          coderabbitai[bot] matches that login. Defaults cover CodeRabbit,
+          Greptile, Codex, and all Copilot variants.
         type: string
         default: "coderabbitai[bot],greptile-apps[bot],greptileai[bot],codex[bot],copilot-*,github-copilot*"
       trusted_associations:
@@ -39,6 +48,20 @@ on:
           OWNER,MEMBER,COLLABORATOR (never NONE, CONTRIBUTOR, or FIRST_TIME*).
         type: string
         default: "OWNER,MEMBER,COLLABORATOR"
+      model:
+        description: >
+          Model id for the Claude session and every agent it spawns. A skill
+          that asks for haiku, sonnet, or opus still runs on this model.
+        type: string
+        default: claude-opus-5-5
+      severities:
+        description: >
+          Comma-separated alert levels to address: critical, high, medium, low.
+          Improvement fixes these levels, review comments on them, and bot
+          findings are fixed only when their stated level is in this list.
+          A bot finding with no stated level is judged on merit.
+        type: string
+        default: critical,high
     secrets:
       oauth_token:
         description: >
@@ -77,6 +100,8 @@ jobs:
       review_id: ${{ steps.plan.outputs.review_id }}
       reviewer: ${{ steps.plan.outputs.reviewer }}
       failed_run_id: ${{ steps.plan.outputs.failed_run_id }}
+      review: ${{ steps.plan.outputs.review }}
+      severities: ${{ steps.plan.outputs.severities }}
     steps:
       - name: Require an auth secret
         env:
@@ -118,6 +143,8 @@ jobs:
           HEALING_ENABLED: ${{ inputs.healing }}
           BOTS_ENABLED: ${{ inputs.bots }}
           COMMENTS_ENABLED: ${{ inputs.comments }}
+          REVIEW_ENABLED: ${{ inputs.review }}
+          SEVERITIES: ${{ inputs.severities }}
           BOT_ALLOWLIST: ${{ inputs.bot_allowlist }}
           TRUSTED_ASSOCS: ${{ inputs.trusted_associations }}
         run: |
@@ -130,6 +157,7 @@ jobs:
           review_id=''
           reviewer=''
           failed_run_id=''
+          review=false
 
           is_trusted() {
             IFS=',' read -ra allowed <<<"$TRUSTED_ASSOCS"
@@ -144,6 +172,10 @@ jobs:
             local login="$1"
             for pattern in "${allowed[@]}"; do
               pattern="${pattern// /}"
+              # [bot] is literal. Unescaped [] is a case character class, so
+              # coderabbitai[bot] would never match that login. * and ? stay wildcards.
+              pattern="${pattern//\[/\\[}"
+              pattern="${pattern//\]/\\]}"
               case "$login" in
                 $pattern) return 0 ;;
               esac
@@ -152,10 +184,10 @@ jobs:
           }
 
           # True when the given commit was authored by this workflow's own bot.
-          # Used to suppress improvement/healing when the triggering push was
-          # produced by a previous claude run — otherwise the push fires
-          # pull_request.synchronize (or a fresh workflow_run), which re-runs
-          # improvement/healing, which commits again, looping indefinitely.
+          # Suppress improvement, review, and healing on that push. Otherwise
+          # pull_request.synchronize (or a fresh workflow_run) re-runs those
+          # tasks, improvement/healing commit again, and the loop continues.
+          # Review does not commit, but it would re-comment on Claude's own fix.
           is_bot_commit() {
             local sha="$1"
             [[ -z "$sha" ]] && return 1
@@ -164,18 +196,67 @@ jobs:
             [[ "$email" == "claude-bot@users.noreply.github.com" ]]
           }
 
+          # Canonical order, so "high, critical" and "CRITICAL, high" both
+          # become "critical, high". Unknown tokens fail the run.
+          normalize_severities() {
+            local raw part canonical joined
+            local -a parts=() selected=()
+            raw=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+            raw="${raw// /}"
+            if [[ -z "${raw//,/}" ]]; then
+              echo "::error::severities must include at least one of critical, high, medium, low." >&2
+              return 1
+            fi
+            IFS=',' read -ra parts <<<"$raw"
+            for part in "${parts[@]}"; do
+              [[ -z "$part" ]] && continue
+              case "$part" in
+                critical|high|medium|low) ;;
+                *)
+                  echo "::error::Unknown alert level '$part'. Use a comma-separated list of critical, high, medium, low." >&2
+                  return 1
+                  ;;
+              esac
+            done
+            for canonical in critical high medium low; do
+              for part in "${parts[@]}"; do
+                if [[ "$part" == "$canonical" ]]; then
+                  selected+=("$canonical")
+                  break
+                fi
+              done
+            done
+            if [[ ${#selected[@]} -eq 0 ]]; then
+              echo "::error::severities must include at least one of critical, high, medium, low." >&2
+              return 1
+            fi
+            joined="${selected[0]}"
+            for ((i = 1; i < ${#selected[@]}; i++)); do
+              joined+=", ${selected[$i]}"
+            done
+            printf '%s\n' "$joined"
+          }
+
+          severities=$(normalize_severities "$SEVERITIES")
+
           case "$EVENT_NAME" in
             pull_request)
-              if [[ "$IMPROVEMENT_ENABLED" == "true" && \
-                    "$PR_HEAD_REPO_FULL" == "$REPO" ]] && is_trusted "$PR_ASSOC"; then
+              if [[ "$PR_HEAD_REPO_FULL" == "$REPO" ]] && is_trusted "$PR_ASSOC"; then
                 if is_bot_commit "$PR_HEAD_SHA"; then
-                  echo "HEAD commit $PR_HEAD_SHA authored by claude[bot]; skipping improvement to avoid self-trigger loop."
+                  echo "HEAD commit $PR_HEAD_SHA authored by claude[bot]; skipping improvement and review to avoid self-trigger loop."
                 else
-                  tasks='["improvement"]'
-                  branch="$PR_HEAD_REF"
-                  pr_number="$PR_NUMBER"
-                  head_sha="$PR_HEAD_SHA"
-                  base_ref="$PR_BASE_REF"
+                  if [[ "$IMPROVEMENT_ENABLED" == "true" ]]; then
+                    tasks='["improvement"]'
+                  fi
+                  if [[ "$REVIEW_ENABLED" == "true" ]]; then
+                    review=true
+                  fi
+                  if [[ "$IMPROVEMENT_ENABLED" == "true" || "$REVIEW_ENABLED" == "true" ]]; then
+                    branch="$PR_HEAD_REF"
+                    pr_number="$PR_NUMBER"
+                    head_sha="$PR_HEAD_SHA"
+                    base_ref="$PR_BASE_REF"
+                  fi
                 fi
               fi
               ;;
@@ -242,8 +323,10 @@ jobs:
             echo "review_id=$review_id"
             echo "reviewer=$reviewer"
             echo "failed_run_id=$failed_run_id"
+            echo "review=$review"
+            echo "severities=$severities"
           } >> "$GITHUB_OUTPUT"
-          echo "Planned: tasks=$tasks branch=$branch pr=$pr_number"
+          echo "Planned: tasks=$tasks review=$review severities=$severities branch=$branch pr=$pr_number"
 
   run:
     name: ${{ matrix.task }}
@@ -272,6 +355,7 @@ jobs:
       REVIEW_ID: ${{ needs.plan.outputs.review_id }}
       REVIEWER: ${{ needs.plan.outputs.reviewer }}
       FAILED_RUN_ID: ${{ needs.plan.outputs.failed_run_id }}
+      SEVERITIES: ${{ needs.plan.outputs.severities }}
     steps:
       - name: Checkout consumer PR branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -306,30 +390,37 @@ jobs:
             improvement)
               task_block=$(cat <<'IMPROVE'
           Run `/skills:improve` to review the PR diff (vs __BASE_REF__) and
-          fix every CRITICAL and WARNING finding. /skills:improve handles
-          the full loop: parallel per-dimension review, parallel worktree
-          fixes, consolidation, verification, and local commits. Run one
-          cycle; do not pass a cycle count argument.
+          fix findings at these alert levels only: __SEVERITIES__.
+          Alert levels, most severe first, are critical, high, medium, low.
+          /skills:improve labels findings critical, warning, and suggestion.
+          Treat critical as critical, warning as high, and suggestion as low.
+          Its cycle-1 instruction to fix every suggestion does not apply:
+          leave any level outside __SEVERITIES__ unchanged.
+          /skills:improve handles the full loop: parallel per-dimension
+          review, parallel worktree fixes, consolidation, verification, and
+          local commits. Run one cycle; do not pass a cycle count argument.
 
           /skills:improve has no "skip if Claude already commented" gate,
           so every push gets a fresh pass scoped to its diff.
 
-          After /skills:improve finishes, post an inline review summary
-          so the PR author sees what Claude found and changed:
+          After /skills:improve finishes, post an inline review summary of
+          the findings you addressed:
             build /tmp/review.json with event=COMMENT,
               body="## Code Review\n\n<per-dimension summary>",
               comments=[{path,line,body:"**[SEVERITY]** ..."}]
             gh api repos/__REPO__/pulls/__PR_NUMBER__/reviews --input /tmp/review.json
 
-          If /skills:improve reports zero CRITICAL/WARNING issues: post
-          "No critical/warning findings." via `gh pr comment` and STOP
-          without committing. The local commits produced by /skills:improve
-          are packaged as an artifact and pushed by the consolidator job.
+          If nothing at __SEVERITIES__ was found: post
+          "No findings at these alert levels: __SEVERITIES__." via
+          `gh pr comment` and STOP without committing. The local commits
+          produced by /skills:improve are packaged as an artifact and
+          pushed by the consolidator job.
           IMPROVE
           )
               task_block=${task_block//__REPO__/$REPO}
               task_block=${task_block//__PR_NUMBER__/$PR_NUMBER}
               task_block=${task_block//__BASE_REF__/$BASE_REF}
+              task_block=${task_block//__SEVERITIES__/$SEVERITIES}
               ;;
             healing)
               task_block=$(cat <<'HEAL'
@@ -357,6 +448,13 @@ jobs:
              threads whose first comment's pullRequestReview.databaseId
              equals __REVIEW_ID__.
           3. For each finding, read the cited code and classify LEGIT or SKIP.
+             Address only these alert levels: __SEVERITIES__.
+             Levels, most severe first: critical, high, medium, low.
+             Map blocker to critical, major to high, moderate to medium,
+             and minor, nit, trivial, or suggestion to low.
+             A stated level outside __SEVERITIES__ is SKIP. Reply with the
+             levels this workflow addresses. A finding with no stated level
+             is judged on merit.
           4. Fix LEGIT in parallel worktree agents (same-file → same agent).
           5. COMMIT LOCALLY with message:
              "(fix): address __REVIEWER__ findings"
@@ -376,6 +474,7 @@ jobs:
               task_block=${task_block//__PR_NUMBER__/$PR_NUMBER}
               task_block=${task_block//__REVIEWER__/$REVIEWER}
               task_block=${task_block//__REVIEW_ID__/$REVIEW_ID}
+              task_block=${task_block//__SEVERITIES__/$SEVERITIES}
               ;;
             comments)
               task_block=$(cat <<'COMMENTS'
@@ -433,7 +532,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Run Claude for ${{ matrix.task }}
-        uses: anthropics/claude-code-action@b4d67413279fc18c6e5de930ae307c4f108714eb # v1.0.104
+        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280
         with:
           claude_code_oauth_token: ${{ secrets.oauth_token }}
           anthropic_api_key: ${{ secrets.api_key }}
@@ -446,8 +545,9 @@ jobs:
           use_commit_signing: 'false'
           use_sticky_comment: 'false'
           show_full_output: 'true'
+          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1"}}}}', inputs.model) }}
           claude_args: |
-            --model claude-opus-4-7
+            --model ${{ inputs.model }}
             --fallback-model claude-sonnet-4-6
             --dangerously-skip-permissions
           prompt: ${{ steps.prompt.outputs.prompt }}
@@ -475,6 +575,104 @@ jobs:
           name: patch-${{ matrix.task }}
           path: /tmp/patch
           retention-days: 1
+
+  # Comment-only path, kept off the run matrix so that job stays read-only.
+  # contents is read, no patch is uploaded, and skip-permissions is not set,
+  # so this job can leave review comments and cannot push.
+  review:
+    name: review
+    needs: plan
+    if: needs.plan.outputs.review == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: claude-review-${{ needs.plan.outputs.branch }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    env:
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ needs.plan.outputs.pr_number }}
+      HEAD_BRANCH: ${{ needs.plan.outputs.branch }}
+      HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
+      BASE_REF: ${{ needs.plan.outputs.base_ref }}
+      SEVERITIES: ${{ needs.plan.outputs.severities }}
+    steps:
+      - name: Checkout consumer PR branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.plan.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Build prompt
+        id: prompt
+        run: |
+          task_block=$(cat <<'REVIEW'
+          You are running a pure review on PR #__PR_NUMBER__ in __REPO__.
+          Branch: __HEAD_BRANCH__ at commit __HEAD_SHA__.
+          Base ref: __BASE_REF__.
+
+          Run `/code-review:code-review --comment __REPO__/pull/__PR_NUMBER__`.
+          The skill posts inline comments, or one summary comment when it
+          finds nothing, and then stops. This task ends there.
+
+          OVERRIDE the skip-check in step 1 of /code-review:code-review:
+          a prior Claude comment is NOT grounds to skip. Every
+          pull_request.synchronize event adds commits that need their own
+          review. Scope the review to commits pushed since the most recent
+          "## Code review" comment on this PR. If there is none, review the
+          full diff against __BASE_REF__. Closed and draft pull requests
+          still skip.
+
+          Only comment on findings at these alert levels: __SEVERITIES__.
+          Alert levels, most severe first, are critical, high, medium, low.
+          Label each finding with one of those four. Drop the rest. If
+          nothing at __SEVERITIES__ remains, post the summary comment and stop.
+
+          Do not edit files, commit, push, approve, request changes, resolve
+          threads, reply to existing threads, apply suggestions, open issues,
+          or open pull requests. Do not add "Fix this" links. Posted comments
+          are the only output.
+          REVIEW
+          )
+          task_block=${task_block//__REPO__/$REPO}
+          task_block=${task_block//__PR_NUMBER__/$PR_NUMBER}
+          task_block=${task_block//__BASE_REF__/$BASE_REF}
+          task_block=${task_block//__HEAD_BRANCH__/$HEAD_BRANCH}
+          task_block=${task_block//__HEAD_SHA__/$HEAD_SHA}
+          task_block=${task_block//__SEVERITIES__/$SEVERITIES}
+
+          delim="EOF_$(openssl rand -hex 16)"
+          {
+            printf 'prompt<<%s\n' "$delim"
+            printf '%s\n' "$task_block"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude review
+        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # Claude Code 2.1.280
+        with:
+          claude_code_oauth_token: ${{ secrets.oauth_token }}
+          anthropic_api_key: ${{ secrets.api_key }}
+          plugin_marketplaces: |
+            https://github.com/anthropics/claude-code.git
+          plugins: |
+            code-review@claude-code-plugins
+          use_commit_signing: 'false'
+          use_sticky_comment: 'false'
+          include_fix_links: 'false'
+          show_full_output: 'true'
+          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1"}}}}', inputs.model) }}
+          # Naming the tool is what installs the inline-comment MCP server.
+          # It can leave a diff comment. It cannot approve or request changes.
+          # dangerously-skip-permissions is intentionally absent.
+          claude_args: |
+            --model ${{ inputs.model }}
+            --fallback-model claude-sonnet-4-6
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
+          prompt: ${{ steps.prompt.outputs.prompt }}
 
   consolidate:
     needs: [plan, run]
