@@ -671,7 +671,7 @@ jobs:
           claude_args: |
             --model ${{ inputs.model }}
             --fallback-model claude-sonnet-4-6
-            --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git log *),Bash(git diff *)"
           prompt: ${{ steps.prompt.outputs.prompt }}
 
   consolidate:

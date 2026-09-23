@@ -258,4 +258,12 @@ grep -q 'default: claude-opus-5-5' .github/workflows/orchestrator.yml || fail 'o
 grep -q 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE' .github/workflows/orchestrator.yml || fail 'agents are not forced onto the workflow model'
 grep -q -- '--model ${{ inputs.model }}' .github/workflows/orchestrator.yml || fail 'model input is not passed to Claude'
 
+# Review scoping needs read-only git, and the test workflow stays least-privilege.
+grep -q 'Bash(git log \*),Bash(git diff \*)' .github/workflows/orchestrator.yml || fail 'review job cannot run git log or git diff'
+grep -q $'^permissions:\n  contents: read' .github/workflows/test.yml || fail 'test workflow permissions are not contents: read'
+grep -q 'version=v1.7.12' .github/workflows/test.yml || fail 'actionlint version is not pinned'
+if grep -q 'releases/latest' .github/workflows/test.yml; then
+  fail 'test workflow still fetches the latest actionlint release'
+fi
+
 echo "plan tests passed"
