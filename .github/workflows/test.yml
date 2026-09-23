@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -14,9 +17,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y python3-yaml
       - name: Run planner tests
         run: bash test/plan.sh
+      # Pinned so a new release cannot change the lint rules under an unchanged workflow.
       - name: Install actionlint
         run: |
-          version=$(curl -fsSL https://api.github.com/repos/rhysd/actionlint/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+          version=v1.7.12
           curl -fsSL -o /tmp/actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/${version}/actionlint_${version#v}_linux_amd64.tar.gz"
           tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
       - name: Lint workflows
