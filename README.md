@@ -184,7 +184,7 @@ Pin both `uses:` to the same commit. `with:` takes the other inputs too, as the 
 
 Push token: `UREVIEW_PUSH_TOKEN_<LOGIN>`, then `GITHUB_TOKEN` (with a warning, and no downstream CI).
 
-The v0.8.0 example also fell back to a shared `UREVIEW_PUSH_TOKEN`. To keep a shared push PAT for authors without their own, write the caller's `push_token` line as `${{ secrets[needs.owner.outputs.push_secret] || secrets.UREVIEW_PUSH_TOKEN }}`. Every author's pushes then use that one PAT.
+The v0.8.0 example also fell back to a shared `UREVIEW_PUSH_TOKEN`. To keep a shared push PAT for authors without their own, write the caller's `push_token` line as `${{ secrets[needs.owner.outputs.push_secret] || secrets.UREVIEW_PUSH_TOKEN }}`. Authors without a personal push token then use the shared PAT; authors with one keep using their own.
 
 An enrolled owner with neither `UREVIEW_OAUTH_TOKEN_<LOGIN>` nor `UREVIEW_API_KEY_<LOGIN>` fails the plan job when a task applies to the event. Events with no task enabled skip quietly.
 
