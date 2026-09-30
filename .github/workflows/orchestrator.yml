@@ -62,6 +62,13 @@ on:
           A bot finding with no stated level is judged on merit.
         type: string
         default: critical,high
+      owner:
+        description: >-
+          GitHub login whose ureview enrolment (UREVIEW_<LOGIN> variable) sets the
+          task flags, severities, and model. Empty keeps the inputs as given.
+          Callers pass needs.owner.outputs.login from owner.yml.
+        type: string
+        default: ''
     secrets:
       oauth_token:
         description: >
@@ -102,8 +109,13 @@ jobs:
       failed_run_id: ${{ steps.plan.outputs.failed_run_id }}
       review: ${{ steps.plan.outputs.review }}
       severities: ${{ steps.plan.outputs.severities }}
+      owner: ${{ steps.plan.outputs.owner }}
+      key: ${{ steps.plan.outputs.key }}
+      model: ${{ steps.plan.outputs.model }}
+      fallback_arguments: ${{ steps.plan.outputs.fallback_arguments }}
     steps:
       - name: Require an auth secret
+        if: inputs.owner == ''
         env:
           HAS_OAUTH: ${{ secrets.oauth_token != '' }}
           HAS_API_KEY: ${{ secrets.api_key != '' }}
@@ -147,6 +159,11 @@ jobs:
           SEVERITIES: ${{ inputs.severities }}
           BOT_ALLOWLIST: ${{ inputs.bot_allowlist }}
           TRUSTED_ASSOCS: ${{ inputs.trusted_associations }}
+          OWNER: ${{ inputs.owner }}
+          MODEL: ${{ inputs.model }}
+          VARS_JSON: ${{ inputs.owner != '' && toJSON(vars) || '{}' }}
+          HAS_OAUTH: ${{ secrets.oauth_token != '' }}
+          HAS_API_KEY: ${{ secrets.api_key != '' }}
         run: |
           set -euo pipefail
           tasks='[]'
@@ -158,6 +175,11 @@ jobs:
           reviewer=''
           failed_run_id=''
           review=false
+          owner="${OWNER:-}"
+          key=''
+          model="${MODEL:-}"
+          fallback_model=claude-sonnet-4-6
+          fallback_arguments=''
 
           is_trusted() {
             IFS=',' read -ra allowed <<<"$TRUSTED_ASSOCS"
@@ -237,6 +259,92 @@ jobs:
             printf '%s\n' "$joined"
           }
 
+          clear_plan() {
+            tasks='[]'
+            review=false
+            branch=''
+            pr_number=''
+            head_sha=''
+            base_ref=''
+            review_id=''
+            reviewer=''
+            failed_run_id=''
+          }
+
+          apply_enrolment() {
+            local variable settings flag value input enabled
+            local model_pattern='^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9]+\])?$'
+            local -A effective=()
+            variable=$(jq -r --arg name "UREVIEW_$key" '[to_entries[] | select((.key | ascii_upcase) == $name) | .value] | first // empty' <<<"${VARS_JSON:-{\}}")
+            if [[ -z "$variable" ]]; then
+              echo "@$owner is not enrolled in ureview (no UREVIEW_$key variable); skipping."
+              clear_plan
+              return 0
+            fi
+            settings=$(jq -c -s 'if length == 1 and (first | type == "object") then first else empty end' <<<"$variable" 2>/dev/null || true)
+            if [[ -z "$settings" ]]; then
+              echo "::error::UREVIEW_$key must be a JSON object."
+              exit 1
+            fi
+            for flag in improvement healing bots comments review; do
+              value=$(jq -r --arg flag "$flag" '.[$flag] | if type == "boolean" then tostring elif . == "true" or . == "false" then . else empty end' <<<"$settings")
+              if [[ -z "$value" ]]; then
+                input="input_$flag"
+                value="${!input}"
+              fi
+              effective[$flag]="$value"
+            done
+            enabled=$(jq -cn \
+              --arg improvement "${effective[improvement]}" \
+              --arg healing "${effective[healing]}" \
+              --arg bots "${effective[bots]}" \
+              --arg comments "${effective[comments]}" \
+              '$ARGS.named | map_values(. == "true")')
+            tasks=$(jq -c --argjson enabled "$enabled" 'map(select($enabled[.]))' <<<"$tasks")
+            if [[ "$review" == "true" && "${effective[review]}" != "true" ]]; then
+              review=false
+            fi
+            value=$(jq -r '.severities | if type == "string" then . else empty end' <<<"$settings")
+            if [[ -n "$value" ]]; then
+              severities=$(normalize_severities "$value")
+            fi
+            value=$(jq -r '.model | if type == "string" then . else empty end' <<<"$settings")
+            if [[ -n "$value" ]]; then
+              if [[ ! "$value" =~ $model_pattern ]]; then
+                echo "::error::UREVIEW_$key model '${value//$'\n'/ }' is not a valid model id."
+                exit 1
+              fi
+              model="$value"
+            fi
+            if [[ "$tasks" == "[]" && "$review" != "true" ]]; then
+              echo "@$owner has no ureview task enabled for this event; skipping."
+              clear_plan
+              return 0
+            fi
+            if [[ "${HAS_OAUTH:-false}" != "true" && "${HAS_API_KEY:-false}" != "true" ]]; then
+              echo "::error::@$owner is enrolled in ureview but neither UREVIEW_OAUTH_TOKEN_$key nor UREVIEW_API_KEY_$key is set. See https://github.com/abnegate/claude-pr-owner#per-user-mode"
+              exit 1
+            fi
+          }
+
+          if [[ -n "$owner" ]]; then
+            if [[ ! "$owner" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then
+              echo "::error::owner '${owner//$'\n'/ }' is not a GitHub login."
+              exit 1
+            fi
+            key=$(printf '%s' "$owner" | tr '[:lower:]-' '[:upper:]_')
+            input_improvement="$IMPROVEMENT_ENABLED"
+            input_healing="$HEALING_ENABLED"
+            input_bots="$BOTS_ENABLED"
+            input_comments="$COMMENTS_ENABLED"
+            input_review="$REVIEW_ENABLED"
+            IMPROVEMENT_ENABLED=true
+            HEALING_ENABLED=true
+            BOTS_ENABLED=true
+            COMMENTS_ENABLED=true
+            REVIEW_ENABLED=true
+          fi
+
           severities=$(normalize_severities "$SEVERITIES")
 
           case "$EVENT_NAME" in
@@ -315,6 +423,14 @@ jobs:
               ;;
           esac
 
+          if [[ -n "$owner" ]] && [[ "$tasks" != "[]" || "$review" == "true" ]]; then
+            apply_enrolment
+          fi
+
+          if [[ "$model" != "$fallback_model" ]]; then
+            fallback_arguments="--fallback-model $fallback_model"
+          fi
+
           {
             echo "tasks=$tasks"
             echo "branch=$branch"
@@ -326,8 +442,16 @@ jobs:
             echo "failed_run_id=$failed_run_id"
             echo "review=$review"
             echo "severities=$severities"
+            echo "owner=$owner"
+            echo "key=$key"
+            echo "model=$model"
+            echo "fallback_arguments=$fallback_arguments"
           } >> "$GITHUB_OUTPUT"
-          echo "Planned: tasks=$tasks review=$review severities=$severities branch=$branch pr=$pr_number"
+          summary="Planned: tasks=$tasks review=$review severities=$severities branch=$branch pr=$pr_number"
+          if [[ -n "$owner" ]]; then
+            summary+=" owner=$owner model=$model"
+          fi
+          echo "$summary"
 
   run:
     name: ${{ matrix.task }}
@@ -546,10 +670,10 @@ jobs:
           use_commit_signing: 'false'
           use_sticky_comment: 'false'
           show_full_output: 'true'
-          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1"}}}}', inputs.model) }}
+          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1"}}}}', needs.plan.outputs.model) }}
           claude_args: |
-            --model ${{ inputs.model }}
-            --fallback-model claude-sonnet-4-6
+            --model ${{ needs.plan.outputs.model }}
+            ${{ needs.plan.outputs.fallback_arguments }}
             --dangerously-skip-permissions
           prompt: ${{ steps.prompt.outputs.prompt }}
 
@@ -665,13 +789,13 @@ jobs:
           use_sticky_comment: 'false'
           include_fix_links: 'false'
           show_full_output: 'true'
-          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1"}}}}', inputs.model) }}
+          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1"}}}}', needs.plan.outputs.model) }}
           # Naming the tool is what installs the inline-comment MCP server.
           # It can leave a diff comment. It cannot approve or request changes.
           # dangerously-skip-permissions is intentionally absent.
           claude_args: |
-            --model ${{ inputs.model }}
-            --fallback-model claude-sonnet-4-6
+            --model ${{ needs.plan.outputs.model }}
+            ${{ needs.plan.outputs.fallback_arguments }}
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git log *),Bash(git diff *)"
           prompt: ${{ steps.prompt.outputs.prompt }}
 
@@ -764,6 +888,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           APPLIED: ${{ steps.apply.outputs.applied }}
           HAS_PUSH_TOKEN: ${{ secrets.push_token != '' }}
+          OWNER: ${{ needs.plan.outputs.owner }}
+          KEY: ${{ needs.plan.outputs.key }}
         run: |
           before_sha=$(git rev-parse "origin/$HEAD_BRANCH")
           after_sha=$(git rev-parse HEAD)
@@ -772,7 +898,11 @@ jobs:
             exit 0
           fi
           if [[ "$HAS_PUSH_TOKEN" != "true" ]]; then
-            echo "::warning::No push_token secret supplied; pushing with GITHUB_TOKEN. Downstream workflows (Tests, CodeQL, etc.) will NOT run on this commit. Set secrets.push_token to a PAT with contents:write to get CI coverage on Claude's pushes."
+            if [[ -z "$OWNER" ]]; then
+              echo "::warning::No push_token secret supplied; pushing with GITHUB_TOKEN. Downstream workflows (Tests, CodeQL, etc.) will NOT run on this commit. Set secrets.push_token to a PAT with contents:write to get CI coverage on Claude's pushes."
+            else
+              echo "::warning::No push token for @$OWNER; pushing with GITHUB_TOKEN. Downstream workflows (Tests, CodeQL, etc.) will NOT run on this commit. Set UREVIEW_PUSH_TOKEN_$KEY to a PAT with contents:write, or pass a shared push token, to get CI coverage on Claude's pushes."
+            fi
           fi
           git push origin "HEAD:$HEAD_BRANCH"
           compare_url="https://github.com/$REPO/compare/$before_sha...$after_sha"
