@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>ureview created</title>
+    <style>
+      :root {
+        --background: #f6f7f9;
+        --surface: #ffffff;
+        --text: #1b1f24;
+        --muted: #59636e;
+        --border: #d1d9e0;
+        --success: #1a7f37;
+        --success-surface: #dafbe1;
+        --warning: #9a6700;
+        --warning-surface: #fff8c5;
+        --danger: #cf222e;
+        --danger-surface: #ffebe9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --background: #0d1117;
+          --surface: #151b23;
+          --text: #e6edf3;
+          --muted: #9198a1;
+          --border: #3d444d;
+          --success: #3fb950;
+          --success-surface: #12261e;
+          --warning: #d29922;
+          --warning-surface: #272115;
+          --danger: #ff7b72;
+          --danger-surface: #2d1417;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--text);
+        font:
+          16px/1.5 system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 48px 16px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+        line-height: 1.25;
+      }
+      p {
+        margin: 0 0 16px;
+        color: var(--muted);
+      }
+      .status {
+        margin-top: 24px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+      .status p {
+        margin: 0;
+        color: var(--text);
+      }
+      .status[data-tone='success'] {
+        border-color: var(--success);
+        background: var(--success-surface);
+      }
+      .status[data-tone='warning'] {
+        border-color: var(--warning);
+        background: var(--warning-surface);
+      }
+      .status[data-tone='danger'] {
+        border-color: var(--danger);
+        background: var(--danger-surface);
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>ureview was created</h1>
+      <p>Return to the terminal to finish setup.</p>
+      <p>
+        Keep this tab open until the terminal says setup is complete, and do not
+        share this page's address.
+      </p>
+      <div class="status" id="status" role="status" hidden>
+        <p id="status-message"></p>
+      </div>
+    </main>
+    <script>
+      const STATE_KEY = 'ureview-manifest-state';
+
+      function readStoredState() {
+        try {
+          const state = sessionStorage.getItem(STATE_KEY);
+          sessionStorage.removeItem(STATE_KEY);
+          return state;
+        } catch {
+          return null;
+        }
+      }
+
+      function verdict(expected, returned) {
+        if (expected === null) {
+          return [
+            'warning',
+            'This browser did not start the setup, so the state could not be checked. Only continue if you started it yourself.',
+          ];
+        }
+        if (returned !== expected) {
+          return [
+            'danger',
+            'The state returned by GitHub does not match the one this browser sent. Do not finish setup; start again from /setup.',
+          ];
+        }
+        return ['success', 'State verified.'];
+      }
+
+      const [tone, message] = verdict(
+        readStoredState(),
+        new URLSearchParams(location.search).get('state'),
+      );
+      const status = document.getElementById('status');
+      status.dataset.tone = tone;
+      document.getElementById('status-message').textContent = message;
+      status.hidden = false;
+    </script>
+  </body>
+</html>
