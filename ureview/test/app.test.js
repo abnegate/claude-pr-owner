@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { describe, it } from 'node:test';
+import sodium from 'libsodium-wrappers';
 import { createApp } from '../src/app.js';
 import { Environment } from '../src/Environment.js';
 import { clearCookie, COOKIE, seal, SESSION_AGE } from '../src/session.js';
+import { actions } from './support/actions.js';
 import { mockFetch, NOT_FOUND } from './support/fetch.js';
 import { environment, pages, sessionCookie, url } from './support/fixtures.js';
+
+await sodium.ready;
+
+const sealingKey = sodium.to_base64(
+  sodium.crypto_box_keypair().publicKey,
+  sodium.base64_variants.ORIGINAL,
+);
 
 const user = {
   login: 'abnegate',
@@ -315,9 +324,9 @@ describe('request gates', () => {
       { method: 'POST', path: '/auth/logout' },
       { method: 'DELETE', path: '/api/repositories/abnegate/edge' },
       {
-        method: 'DELETE',
-        path: '/api/repositories/abnegate/edge/tokens',
-        query: { oauth: 'true' },
+        method: 'PUT',
+        path: '/api/repositories/abnegate/edge/enrolment',
+        bodyText: '{"config":{},"tokens":{"oauth":"token"}}',
       },
       {
         method: 'PUT',
@@ -327,9 +336,9 @@ describe('request gates', () => {
       { method: 'PUT', path: '/api/organizations/appwrite/config' },
       { method: 'DELETE', path: '/api/organizations/appwrite' },
       {
-        method: 'DELETE',
-        path: '/api/organizations/appwrite/tokens',
-        query: { push: 'true' },
+        method: 'PUT',
+        path: '/api/organizations/appwrite/enrolment',
+        bodyText: '{"config":{},"tokens":{"push":"token"}}',
       },
     ];
     for (const request of requests) {
@@ -359,8 +368,10 @@ describe('request gates', () => {
     for (const path of [
       '/api/repositories/abnegate/edge/config',
       '/api/repositories/abnegate/edge/tokens',
+      '/api/repositories/abnegate/edge/enrolment',
       '/api/organizations/appwrite/config',
       '/api/organizations/appwrite/tokens',
+      '/api/organizations/appwrite/enrolment',
     ]) {
       const response = await send({
         method: 'PUT',
@@ -418,6 +429,8 @@ describe('request gates', () => {
       },
       { method: 'PUT', path: '/api/repositories/abnegate/edge/extra/config' },
       { method: 'PUT', path: '/api/repositories/abnegate//tokens' },
+      { method: 'PUT', path: '/api/repositories/abnegate//enrolment' },
+      { method: 'PUT', path: '/api/organizations/bad_org/enrolment' },
       { method: 'DELETE', path: '/api/repositories/abnegate/bad%2Frepo' },
       { method: 'GET', path: '/api/organizations/bad.org' },
       { method: 'PUT', path: '/api/organizations/bad_org/config' },
@@ -500,6 +513,57 @@ describe('error mapping', () => {
       tokens.oauth,
       tokens.push,
       bodyText,
+    ]);
+  });
+
+  it('never logs tokens, bodies or rollback details when an enrolment rolls back', async () => {
+    const base = '/repos/abnegate/edge/actions';
+    const store = actions(base, { publicKey: sealingKey });
+    const bodyText = JSON.stringify({ config: { review: true }, tokens });
+    const context = start({
+      routes: {
+        'GET /repos/abnegate/edge': {
+          data: {
+            name: 'edge',
+            owner: { login: 'abnegate', type: 'User' },
+            permissions: { push: true },
+          },
+        },
+        'GET /repos/abnegate/edge/installation': { data: { id: 42 } },
+        'POST /app/installations/42/access_tokens': {
+          status: 201,
+          data: { token: 'ghs_write_marker' },
+        },
+        ...store.routes,
+        [`POST ${base}/variables`]: { status: 500, data: {} },
+        [`DELETE ${base}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: {
+          status: 500,
+          data: {},
+        },
+      },
+    });
+    const response = await context.send({
+      method: 'PUT',
+      path: '/api/repositories/abnegate/edge/enrolment',
+      headers: writing(),
+      bodyText,
+    });
+    assertFailure(response, 502, 'github');
+    assert.deepEqual(JSON.parse(response.body), {
+      error: 'github',
+      rolledBack: ['oauth'],
+      rollbackFailed: ['push'],
+    });
+    assert.deepEqual(context.logs, [
+      ['PUT /api/repositories/abnegate/edge/enrolment 502'],
+    ]);
+    assertNothingLeaked(context, [
+      user.token,
+      'ghs_write_marker',
+      tokens.oauth,
+      tokens.push,
+      bodyText,
+      'DELETE',
     ]);
   });
 
@@ -630,8 +694,10 @@ describe('HEAD and OPTIONS', () => {
       ['/auth/logout', 'POST, OPTIONS'],
       ['/api/repositories/abnegate/edge', 'GET, DELETE, HEAD, OPTIONS'],
       ['/api/organizations/appwrite/config', 'PUT, OPTIONS'],
-      ['/api/repositories/abnegate/edge/tokens', 'PUT, DELETE, OPTIONS'],
-      ['/api/organizations/appwrite/tokens', 'PUT, DELETE, OPTIONS'],
+      ['/api/repositories/abnegate/edge/tokens', 'PUT, OPTIONS'],
+      ['/api/organizations/appwrite/tokens', 'PUT, OPTIONS'],
+      ['/api/repositories/abnegate/edge/enrolment', 'PUT, OPTIONS'],
+      ['/api/organizations/appwrite/enrolment', 'PUT, OPTIONS'],
     ];
     for (const [path, allow] of cases) {
       const response = await send({ method: 'OPTIONS', path });

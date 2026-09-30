@@ -1,4 +1,5 @@
 import { callback, currentUser, login, logout, me } from './auth.js';
+import { EnrolmentError } from './EnrolmentError.js';
 import { GitHubAppError } from './GitHubAppError.js';
 import { GitHubError } from './GitHubError.js';
 import { LOGIN } from './names.js';
@@ -147,7 +148,24 @@ function rateLimited(seconds) {
   );
 }
 
+function rollback({ rolledBack, rollbackFailed }) {
+  return {
+    ...(rolledBack.length === 0 ? {} : { rolledBack }),
+    ...(rollbackFailed.length === 0 ? {} : { rollbackFailed }),
+  };
+}
+
+function annotate(response, fields) {
+  return {
+    ...response,
+    body: JSON.stringify({ ...JSON.parse(response.body), ...fields }),
+  };
+}
+
 function mapError(thrown, error, now) {
+  if (thrown instanceof EnrolmentError) {
+    return annotate(mapError(thrown.cause, error, now), rollback(thrown));
+  }
   if (thrown instanceof ValidationError) {
     return failure(400, 'invalid', thrown.message);
   }
@@ -215,9 +233,9 @@ export function createApp({ environment, fetch, pages, now = Date.now }) {
       repositories.saveTokens,
     ),
     compile(
-      'DELETE',
-      '/api/repositories/:owner/:repository/tokens',
-      repositories.removeTokens,
+      'PUT',
+      '/api/repositories/:owner/:repository/enrolment',
+      repositories.enrol,
     ),
     compile(
       'DELETE',
@@ -237,9 +255,9 @@ export function createApp({ environment, fetch, pages, now = Date.now }) {
       organizations.saveTokens,
     ),
     compile(
-      'DELETE',
-      '/api/organizations/:organization/tokens',
-      organizations.removeTokens,
+      'PUT',
+      '/api/organizations/:organization/enrolment',
+      organizations.enrol,
     ),
     compile('DELETE', '/api/organizations/:organization', organizations.remove),
   ];

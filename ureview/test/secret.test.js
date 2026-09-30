@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { before, describe, it } from 'node:test';
 import sodium from 'libsodium-wrappers';
 import { ValidationError } from '../src/ValidationError.js';
-import { encrypt, validateSelection, validateTokens } from '../src/secret.js';
+import { encrypt, validateTokens } from '../src/secret.js';
 
 const limit = 48 * 1024;
 
@@ -192,52 +192,22 @@ describe('validateTokens', () => {
       });
       assert.throws(() => validateTokens(body), ValidationError);
     });
-  }
-});
 
-describe('validateSelection', () => {
-  it('selects oauth', () => {
-    assert.deepEqual(validateSelection({ oauth: 'true' }), { oauth: true });
+    it(`accepts nothing in ${JSON.stringify(body)} when tokens are optional`, () => {
+      assert.deepEqual(validateTokens(body, { required: false }), {});
+    });
+  }
+
+  it('still validates optional tokens', () => {
+    assert.deepEqual(
+      validateTokens({ push: ' github_pat_x ' }, { required: false }),
+      { push: 'github_pat_x' },
+    );
+    for (const body of [undefined, null, [], { apiKey: 'sk-ant-api' }]) {
+      assert.throws(
+        () => validateTokens(body, { required: false }),
+        ValidationError,
+      );
+    }
   });
-
-  it('selects push', () => {
-    assert.deepEqual(validateSelection({ push: 'true' }), { push: true });
-  });
-
-  it('selects both', () => {
-    assert.deepEqual(validateSelection({ oauth: 'true', push: 'true' }), {
-      oauth: true,
-      push: true,
-    });
-  });
-
-  for (const key of [
-    'apiKey',
-    'variable',
-    'name',
-    'UREVIEW_API_KEY_OTHER',
-    'Oauth',
-  ]) {
-    it(`rejects the unknown key ${key}`, () => {
-      assert.throws(() => validateSelection({ oauth: 'true', [key]: 'true' }), {
-        name: 'ValidationError',
-        message: `Unknown token: ${key}.`,
-      });
-    });
-  }
-
-  for (const value of ['false', '1', '', 'TRUE']) {
-    it(`rejects the value ${JSON.stringify(value)}`, () => {
-      assert.throws(() => validateSelection({ push: value }), ValidationError);
-    });
-  }
-
-  for (const query of [{}, undefined, null]) {
-    it(`asks for a selection in ${JSON.stringify(query)}`, () => {
-      assert.throws(() => validateSelection(query), {
-        name: 'ValidationError',
-        message: 'Select oauth or push.',
-      });
-    });
-  }
 });

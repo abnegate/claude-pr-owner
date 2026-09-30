@@ -767,78 +767,95 @@ describe('Store.remove', () => {
   });
 });
 
-describe('Store.removeTokens', () => {
+describe('Store.presence', () => {
+  test('reports whether the variable and each secret exist', async () => {
+    const { fetch, calls } = mockFetch({
+      ...absent(repositoryBase),
+      [`GET ${repositoryBase}/variables/UREVIEW_ABNEGATE`]: {
+        data: { name: 'UREVIEW_ABNEGATE', value: 'not json' },
+      },
+      [`GET ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: {
+        data: { name: 'UREVIEW_PUSH_TOKEN_ABNEGATE' },
+      },
+    });
+    assert.deepEqual(await repository(fetch).presence(names), {
+      variable: true,
+      oauth: false,
+      push: true,
+      apiKey: false,
+    });
+    assert.deepEqual(
+      keys(calls).sort(),
+      Object.keys(absent(repositoryBase)).sort(),
+    );
+  });
+
+  test('throws on any status other than 200 or 404', async () => {
+    const { fetch } = mockFetch({
+      ...absent(organizationBase),
+      [`GET ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: {
+        status: 403,
+        data: { message: 'Must have admin rights to Repository.' },
+      },
+    });
+    await assert.rejects(
+      organization(fetch).presence(names),
+      (error) => error instanceof GitHubError && error.status === 403,
+    );
+  });
+});
+
+describe('Store.removeSecrets', () => {
   const oauth = `DELETE ${repositoryBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`;
   const push = `DELETE ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`;
 
-  test('deletes both token secrets when both are selected', async () => {
-    const { fetch, calls } = mockFetch({
-      [oauth]: { status: 204 },
-      [push]: { status: 204 },
-    });
-    await repository(fetch).removeTokens(names, { oauth: true, push: true });
-    assert.deepEqual(keys(calls).sort(), [oauth, push]);
-    for (const call of calls) {
-      assert.equal(call.headers.get('authorization'), 'Bearer ghs_install');
-    }
-  });
-
-  test('deletes only the selected token secret', async () => {
-    for (const [selection, expected] of [
-      [{ oauth: true }, oauth],
-      [{ push: true }, push],
-      [{ oauth: true, push: false }, oauth],
-    ]) {
-      const { fetch, calls } = mockFetch({ [expected]: { status: 204 } });
-      await repository(fetch).removeTokens(names, selection);
-      assert.deepEqual(keys(calls), [expected]);
-    }
-  });
-
-  test('never deletes the API key, the variable, or unselected secrets', async () => {
+  test('deletes only the named kinds and reports each as removed', async () => {
     const { fetch, calls } = mockFetch({ [push]: { status: 204 } });
-    await repository(fetch).removeTokens(names, {
-      push: true,
-      apiKey: true,
-      variable: true,
+    assert.deepEqual(await repository(fetch).removeSecrets(names, ['push']), {
+      removed: ['push'],
+      failed: [],
     });
     assert.deepEqual(keys(calls), [push]);
+    assert.equal(calls[0].headers.get('authorization'), 'Bearer ghs_install');
   });
 
-  test('deletes nothing when nothing is selected', async () => {
-    const { fetch, calls } = mockFetch({});
-    await repository(fetch).removeTokens(names, {});
-    assert.deepEqual(calls, []);
-  });
-
-  test('tolerates 404 for a secret that no longer exists', async () => {
-    const { fetch, calls } = mockFetch({
+  test('tolerates 404 for a secret that was never written', async () => {
+    const { fetch } = mockFetch({
       [oauth]: NOT_FOUND,
       [push]: { status: 204 },
     });
-    await repository(fetch).removeTokens(names, { oauth: true, push: true });
-    assert.equal(calls.length, 2);
+    assert.deepEqual(
+      await repository(fetch).removeSecrets(names, ['oauth', 'push']),
+      { removed: ['oauth', 'push'], failed: [] },
+    );
+  });
+
+  test('waits for every delete and reports the ones that failed', async () => {
+    let settled = false;
+    const { fetch } = mockFetch({
+      [oauth]: { status: 502, data: { message: 'boom' } },
+      [push]: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        settled = true;
+        return { status: 204 };
+      },
+    });
+    assert.deepEqual(
+      await repository(fetch).removeSecrets(names, ['oauth', 'push']),
+      { removed: ['push'], failed: ['oauth'] },
+    );
+    assert.equal(settled, true);
   });
 
   test('uses the organization base', async () => {
     const { fetch, calls } = mockFetch({
       [oauth.replace(repositoryBase, organizationBase)]: { status: 204 },
     });
-    await organization(fetch).removeTokens(names, { oauth: true });
+    await organization(fetch).removeSecrets(names, ['oauth']);
     assert.deepEqual(keys(calls), [
       `DELETE ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
     ]);
     assert.equal(calls[0].headers.get('authorization'), 'Bearer gho_user');
-  });
-
-  test('throws GitHubError on any other status', async () => {
-    const { fetch } = mockFetch({
-      [oauth]: { status: 403, data: { message: 'Forbidden' } },
-    });
-    await assert.rejects(
-      repository(fetch).removeTokens(names, { oauth: true }),
-      (error) => error instanceof GitHubError && error.status === 403,
-    );
   });
 });
 

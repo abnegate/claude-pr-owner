@@ -149,20 +149,29 @@ export class Store {
     ]);
   }
 
-  async removeTokens(names, { oauth = false, push = false }) {
-    const selected = [
-      [names.oauth, oauth],
-      [names.push, push],
-    ].filter(([, chosen]) => chosen === true);
-    await Promise.all(
-      selected.map(([name]) =>
+  async presence(names) {
+    const [variable, oauth, push, apiKey] = await Promise.all([
+      this.#exists(`/variables/${encodeURIComponent(names.variable)}`),
+      this.#secretExists(names.oauth),
+      this.#secretExists(names.push),
+      this.#secretExists(names.apiKey),
+    ]);
+    return { variable, oauth, push, apiKey };
+  }
+
+  async removeSecrets(names, kinds) {
+    const deletes = await Promise.allSettled(
+      kinds.map((kind) =>
         this.#send(
           'DELETE',
-          `/secrets/${encodeURIComponent(name)}`,
+          `/secrets/${encodeURIComponent(names[kind])}`,
           [204, 404],
         ),
       ),
     );
+    const settled = (status) =>
+      kinds.filter((_, index) => deletes[index].status === status);
+    return { removed: settled('fulfilled'), failed: settled('rejected') };
   }
 
   async #variable(name) {
@@ -174,12 +183,12 @@ export class Store {
     return status === 200 ? parse(data?.value) : null;
   }
 
-  async #secretExists(name) {
-    const { status } = await this.#send(
-      'GET',
-      `/secrets/${encodeURIComponent(name)}`,
-      [200, 404],
-    );
+  #secretExists(name) {
+    return this.#exists(`/secrets/${encodeURIComponent(name)}`);
+  }
+
+  async #exists(suffix) {
+    const { status } = await this.#send('GET', suffix, [200, 404]);
     return status === 200;
   }
 

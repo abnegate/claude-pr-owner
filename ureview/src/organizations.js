@@ -1,9 +1,10 @@
 import { validate } from './config.js';
+import * as enrolment from './enrolment.js';
 import { GitHubError } from './GitHubError.js';
 import { installations, request } from './github.js';
 import { names } from './names.js';
 import { empty, json } from './response.js';
-import { validateSelection, validateTokens } from './secret.js';
+import { validateTokens } from './secret.js';
 import { Store } from './Store.js';
 
 const DENIED = new Set([403, 404]);
@@ -43,28 +44,26 @@ export async function saveConfig(context) {
 }
 
 export async function saveTokens(context) {
-  const { fetch, params, user } = context;
   const tokens = validateTokens(context.body);
-  const { repository_selection: repositorySelection } = await installation(
-    fetch,
-    user.token,
-    params.organization,
+  const repositorySelection = await selection(context);
+  await store(context, repositorySelection).saveSecrets(
+    names(context.user.login),
+    tokens,
   );
-  await Store.organization({
-    fetch,
-    token: user.token,
-    organization: params.organization,
-    repositorySelection,
-  }).saveSecrets(names(user.login), tokens);
   return empty(204);
 }
 
-export async function removeTokens(context) {
-  const { fetch, params, user } = context;
-  const tokens = validateSelection(context.query);
-  await installation(fetch, user.token, params.organization);
-  await store(context).removeTokens(names(user.login), tokens);
-  return empty(204);
+export async function enrol(context) {
+  const submitted = enrolment.validate(context.body);
+  const repositorySelection = await selection(context);
+  return json(
+    200,
+    await enrolment.enrol(
+      store(context, repositorySelection),
+      names(context.user.login),
+      submitted,
+    ),
+  );
 }
 
 export async function remove(context) {
@@ -72,12 +71,18 @@ export async function remove(context) {
   return empty(204);
 }
 
-function store({ fetch, params, user }) {
+function store({ fetch, params, user }, repositorySelection = null) {
   return Store.organization({
     fetch,
     token: user.token,
     organization: params.organization,
+    repositorySelection,
   });
+}
+
+async function selection({ fetch, params, user }) {
+  const found = await installation(fetch, user.token, params.organization);
+  return found.repository_selection;
 }
 
 async function organizationInstallations(fetch, token) {

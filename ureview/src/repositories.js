@@ -1,4 +1,5 @@
 import { validate } from './config.js';
+import * as enrolment from './enrolment.js';
 import { GitHubError } from './GitHubError.js';
 import {
   appToken,
@@ -10,7 +11,7 @@ import {
 } from './github.js';
 import { names } from './names.js';
 import { empty, json } from './response.js';
-import { validateSelection, validateTokens } from './secret.js';
+import { validateTokens } from './secret.js';
 import { Store } from './Store.js';
 
 const READ = Object.freeze({
@@ -84,11 +85,21 @@ export async function saveTokens(context) {
   return empty(204);
 }
 
-export async function removeTokens(context) {
-  const tokens = validateSelection(context.query);
-  const { store } = await authorize(context, WRITE);
-  await store.removeTokens(names(context.user.login), tokens);
-  return empty(204);
+export async function enrol(context) {
+  const submitted = enrolment.validate(context.body);
+  const identifiers = names(context.user.login);
+  const { repository, store } = await authorize(context, WRITE);
+  const inheritsClaudeToken =
+    repository.owner.type === ORGANIZATION
+      ? async () => {
+          const { secrets } = await store.inherited(identifiers);
+          return secrets.oauth || secrets.apiKey;
+        }
+      : undefined;
+  return json(
+    200,
+    await enrolment.enrol(store, identifiers, submitted, inheritsClaudeToken),
+  );
 }
 
 export async function remove(context) {

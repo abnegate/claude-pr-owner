@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import sodium from 'libsodium-wrappers';
 import { createApp } from '../src/app.js';
+import { actions, mutations } from './support/actions.js';
 import { mockFetch, NOT_FOUND } from './support/fetch.js';
 import { environment, pages, sessionCookie, url } from './support/fixtures.js';
 
@@ -649,102 +650,192 @@ describe('PUT /api/organizations/:organization/tokens', () => {
   }
 });
 
-describe('DELETE /api/organizations/:organization/tokens', () => {
-  const path = '/api/organizations/appwrite-labs/tokens';
+describe('PUT /api/organizations/:organization/enrolment', () => {
+  const path = '/api/organizations/appwrite-labs/enrolment';
+  const base = '/orgs/appwrite-labs/actions';
+  const oauth = 'sk-ant-oat01-org';
+  const push = 'github_pat_org';
+  const HIDDEN =
+    'This organization secret is shared with selected repositories that ureview cannot see. Rotate it with `gh secret set --org` instead.';
 
-  test('deletes only the selected secrets with the user token', async () => {
-    const { send, calls } = client(routes());
-    const response = await send('DELETE', path, undefined, {
-      oauth: 'true',
-      push: 'true',
+  function enrolment(
+    { repositorySelection, key, login, ...fake } = {},
+    overrides = {},
+  ) {
+    const store = actions(base, { key, publicKey: organizationKey, ...fake });
+    const { send, calls } = client(
+      {
+        ...routes({ key, repositorySelection }),
+        ...store.routes,
+        ...overrides,
+      },
+      login === undefined ? {} : { login },
+    );
+    return { send, calls, state: store.state };
+  }
+
+  test('checks the installation, then writes the tokens and config with the user token', async () => {
+    const { send, calls, state } = enrolment();
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { oauth, push },
     });
 
-    assert.equal(response.status, 204);
-    assert.equal(response.body, '');
-    assert.deepEqual(keys(calls.filter((call) => call.method === 'GET')), [
-      'GET /user/installations',
-    ]);
-    const deletes = calls.filter((call) => call.method === 'DELETE');
-    assert.deepEqual(keys(deletes).sort(), [
-      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
-      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
-    ]);
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.data, {
+      config: { review: true },
+      secrets: { oauth: true, push: true, apiKey: false },
+    });
+    assert.equal(keys(calls)[0], 'GET /user/installations');
+    for (const call of mutations(calls)) {
+      if (call.method === 'PUT') {
+        assert.equal(call.body.visibility, 'all');
+        const expected = call.key.includes('OAUTH') ? oauth : push;
+        assert.equal(decrypt(call.body.encrypted_value), expected);
+      }
+    }
+    const created = calls.find((call) => call.key === `POST ${base}/variables`);
+    assert.equal(created.body.visibility, 'all');
+    assert.equal(state.variable, '{"review":true}');
     assertUserTokenOnly(calls);
   });
 
-  test('leaves the unselected token, the API key and the variable in place', async () => {
-    const { send, calls } = client(routes());
-    const response = await send('DELETE', path, undefined, { oauth: 'true' });
+  test('names every secret and the variable after the signed-in user', async () => {
+    const { send, calls, state } = enrolment({
+      key: 'SOME_USER',
+      login: 'some-user',
+    });
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { oauth },
+    });
 
-    assert.equal(response.status, 204);
-    assert.deepEqual(keys(calls.filter((call) => call.method === 'DELETE')), [
-      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
-    ]);
+    assert.equal(response.status, 200);
+    for (const call of mutations(calls)) {
+      assert.ok(
+        call.key.endsWith('_SOME_USER') ||
+          call.body?.name === 'UREVIEW_SOME_USER',
+        call.key,
+      );
+    }
+    assert.deepEqual([...state.secrets], ['oauth']);
   });
 
-  test('names the secrets after the signed-in user', async () => {
-    const { send, calls } = client(
-      {
-        ...routes({ key: 'SOME_USER' }),
-        'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_SOME_USER':
-          { status: 204 },
-      },
-      { login: 'some-user' },
-    );
-    const response = await send('DELETE', path, undefined, { push: 'true' });
-
-    assert.equal(response.status, 204);
-    assert.deepEqual(keys(calls.filter((call) => call.method === 'DELETE')), [
-      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_SOME_USER',
-    ]);
-  });
-
-  test('returns not_found without deleting when the organization is not installed', async () => {
-    const { send, calls } = client(routes());
+  test('refuses a user who cannot see the installation without writing', async () => {
+    const { send, calls } = enrolment();
     const response = await send(
-      'DELETE',
-      '/api/organizations/missing-org/tokens',
-      undefined,
-      { oauth: 'true' },
+      'PUT',
+      '/api/organizations/missing-org/enrolment',
+      { config: {}, tokens: { oauth } },
     );
 
     assert.equal(response.status, 404);
-    assert.equal(response.data.error, 'not_found');
     assert.deepEqual(keys(calls), ['GET /user/installations']);
   });
 
-  test('maps a GitHub 403 for a non-admin to forbidden', async () => {
-    const { send } = client({
-      ...routes(),
-      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE':
-        {
-          status: 403,
-          data: { message: 'Must have admin rights to Repository.' },
-        },
+  test('refuses a non-admin before any write', async () => {
+    const denied = {
+      status: 403,
+      data: { message: 'Must have admin rights to Repository.' },
+    };
+    const { send, calls } = enrolment(
+      {},
+      {
+        [`GET ${base}/variables/UREVIEW_ABNEGATE`]: denied,
+        [`GET ${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: denied,
+        [`GET ${base}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: denied,
+        [`GET ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`]: denied,
+      },
+    );
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { oauth },
     });
-    const response = await send('DELETE', path, undefined, { oauth: 'true' });
 
     assert.equal(response.status, 403);
     assert.equal(response.data.error, 'forbidden');
+    assert.deepEqual(mutations(calls), []);
   });
 
-  const rejected = [
-    ['no selection', {}],
-    ['the API key', { apiKey: 'true' }],
-    ['the API key alongside a token', { push: 'true', apiKey: 'true' }],
-    ['a secret name', { UREVIEW_API_KEY_ABNEGATE: 'true' }],
-  ];
-
-  for (const [label, query] of rejected) {
-    test(`rejects ${label} without calling GitHub`, async () => {
-      const { send, calls } = client(routes());
-      const response = await send('DELETE', path, undefined, query);
-
-      assert.equal(response.status, 400);
-      assert.equal(response.data.error, 'invalid');
-      assert.deepEqual(calls, []);
+  test('still refuses to rewrite a selected secret it cannot see, and keeps it', async () => {
+    const { send, calls, state } = enrolment(
+      { repositorySelection: 'selected', secrets: ['oauth'] },
+      {
+        [`GET ${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: {
+          data: {
+            name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE',
+            visibility: 'selected',
+          },
+        },
+      },
+    );
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { oauth, push },
     });
-  }
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(response.data, {
+      error: 'invalid',
+      message: HIDDEN,
+      rolledBack: ['push'],
+    });
+    assert.deepEqual(
+      calls.filter((call) => call.method === 'PUT'),
+      [],
+    );
+    assert.equal(
+      calls.some(
+        (call) =>
+          call.key === `DELETE ${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
+      ),
+      false,
+    );
+    assert.deepEqual([...state.secrets], ['oauth']);
+    assert.equal(state.variable, null);
+  });
+
+  test('rolls back only the new kinds when the config write fails', async () => {
+    const { send, state } = enrolment(
+      { secrets: ['push'] },
+      { [`POST ${base}/variables`]: { status: 500, data: {} } },
+    );
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { oauth, push },
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(response.data, { error: 'github', rolledBack: ['oauth'] });
+    assert.deepEqual([...state.secrets], ['push']);
+  });
+
+  test('never rolls back when the variable already exists', async () => {
+    const { send, calls } = enrolment(
+      { variable: '{"review":true}' },
+      { [`PATCH ${base}/variables/UREVIEW_ABNEGATE`]: { status: 500 } },
+    );
+    const response = await send('PUT', path, {
+      config: { review: false },
+      tokens: { oauth },
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(response.data, { error: 'github' });
+    assert.equal(
+      calls.some((call) => call.method === 'DELETE'),
+      false,
+    );
+  });
+
+  test('refuses to enrol without a Claude token and writes nothing', async () => {
+    const { send, calls } = enrolment();
+    const response = await send('PUT', path, { config: {}, tokens: {} });
+
+    assert.equal(response.status, 400);
+    assert.equal(response.data.message, 'Provide a Claude token to enrol.');
+    assert.deepEqual(mutations(calls), []);
+  });
 });
 
 describe('DELETE /api/organizations/:organization', () => {

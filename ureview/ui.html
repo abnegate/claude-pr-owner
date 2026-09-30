@@ -1929,6 +1929,8 @@
       const TOAST_DURATION = 3200;
       const SECOND = 1000;
 
+      const TOKEN_KINDS = ['oauth', 'push'];
+
       const TOKEN_STATES = Object.freeze({
         set: { text: 'Set', className: 'chip set' },
         inherited: { text: 'Set in organization', className: 'chip inherited' },
@@ -1991,13 +1993,21 @@
       const timers = new WeakMap();
 
       class RequestError extends Error {
-        constructor(status, code, detail = '', retryAfter = null) {
+        constructor(
+          status,
+          code,
+          detail = '',
+          retryAfter = null,
+          { rolledBack = [], rollbackFailed = [] } = {},
+        ) {
           super(detail || code || `Request failed with status ${status}`);
           this.name = 'RequestError';
           this.status = status;
           this.code = code;
           this.detail = detail;
           this.retryAfter = retryAfter;
+          this.rolledBack = rolledBack;
+          this.rollbackFailed = rollbackFailed;
         }
       }
 
@@ -2073,7 +2083,17 @@
           code,
           detail,
           retryAfterOf(data, response),
+          {
+            rolledBack: tokenKinds(data?.rolledBack),
+            rollbackFailed: tokenKinds(data?.rollbackFailed),
+          },
         );
+      }
+
+      function tokenKinds(value) {
+        return Array.isArray(value)
+          ? value.filter((kind) => TOKEN_KINDS.includes(kind))
+          : [];
       }
 
       function element(
@@ -2724,7 +2744,7 @@
 
       function readTokens(form) {
         const tokens = {};
-        for (const name of ['oauth', 'push']) {
+        for (const name of TOKEN_KINDS) {
           const value = form.elements.namedItem(name).value.replace(/\s+/g, '');
           if (value !== '') {
             tokens[name] = value;
@@ -2788,10 +2808,10 @@
         view.settings.elements
           .namedItem('model')
           .removeAttribute('aria-invalid');
-        let body;
+        let config;
         let tokens;
         try {
-          body = readSettings(view.settings);
+          config = readSettings(view.settings);
           tokens = readTokens(view.tokens);
           requireToken(target, tokens);
         } catch (error) {
@@ -2802,43 +2822,13 @@
           throw error;
         }
         const enrolling = target.config === null;
-        const created = enrolling
-          ? Object.keys(tokens).filter((key) => target.secrets[key] === false)
-          : [];
-        const messages = [];
-        let saved = false;
         setStatus(view.settingsStatus, '', '');
         setBusy(view.submit, true, 'Saving…');
         try {
-          if (Object.keys(tokens).length > 0) {
-            await request('PUT', `${target.path}/tokens`, tokens);
-            saved = true;
-            messages.push(savedTokensMessage(tokens));
-          }
-          const data = await request('PUT', `${target.path}/config`, body);
-          if (saved) {
-            applyTokens(target, tokens);
-          }
-          target.config =
-            normalizeConfig(data?.config) ?? normalizeConfig(body);
-          renderSummary(target);
-          fillSettings(target);
-          messages.push(enrolling ? 'Enrolled.' : 'Settings saved.');
-          setStatus(view.settingsStatus, 'success', messages.join(' '));
-          propagate(target);
-        } catch (error) {
-          if (
-            created.length > 0 &&
-            error instanceof RequestError &&
-            error.status !== 401
-          ) {
-            await discardTokens(target, tokens, created, error);
+          if (enrolling || Object.keys(tokens).length > 0) {
+            await enrol(target, config, tokens, enrolling);
           } else {
-            if (saved) {
-              applyTokens(target, tokens);
-              propagate(target);
-            }
-            reportRequestError(error, view.settingsStatus, target);
+            await updateSettings(target, config);
           }
         } finally {
           setBusy(view.submit, false);
@@ -2846,22 +2836,72 @@
         }
       }
 
-      async function discardTokens(target, tokens, created, error) {
-        const query = new URLSearchParams(created.map((key) => [key, 'true']));
-        let undo = null;
+      async function updateSettings(target, config) {
+        const status = target.view.settingsStatus;
         try {
-          await request('DELETE', `${target.path}/tokens?${query}`);
-        } catch (caught) {
-          undo = caught;
-        }
-        const replaced = Object.keys(tokens).length > created.length;
-        await reconcile(target, created, replaced, describe(error, target));
-        if (undo !== null && !(undo instanceof RequestError)) {
-          throw undo;
+          const data = await request('PUT', `${target.path}/config`, config);
+          target.config =
+            normalizeConfig(data?.config) ?? normalizeConfig(config);
+          renderSummary(target);
+          fillSettings(target);
+          setStatus(status, 'success', 'Settings saved.');
+          propagate(target);
+        } catch (error) {
+          reportRequestError(error, status, target);
         }
       }
 
-      async function reconcile(target, keys, replaced, reason) {
+      async function enrol(target, config, tokens, enrolling) {
+        const view = target.view;
+        let data;
+        try {
+          data = await request('PUT', `${target.path}/enrolment`, {
+            config,
+            tokens,
+          });
+        } catch (error) {
+          if (!(error instanceof RequestError)) {
+            throw error;
+          }
+          if (error.status !== 401) {
+            await reconcile(
+              target,
+              tokens,
+              enrolmentFailure(error, target, tokens),
+            );
+          }
+          return;
+        }
+        view.tokens.reset();
+        target.config =
+          normalizeConfig(data?.config) ?? normalizeConfig(config);
+        target.secrets = normalizeSecrets(data?.secrets);
+        renderSummary(target);
+        fillSettings(target);
+        setStatus(
+          view.settingsStatus,
+          'success',
+          enrolling
+            ? 'Enrolled.'
+            : `${savedTokensMessage(tokens)} Settings saved.`,
+        );
+        propagate(target);
+      }
+
+      function enrolmentFailure(error, target, tokens) {
+        const reason = describe(error, target);
+        if (error.rollbackFailed.length > 0) {
+          return `${reason} Enrolment failed and the new token could not be removed. Unenrol to delete it.`;
+        }
+        if (error.rolledBack.length === 0) {
+          return reason;
+        }
+        return error.rolledBack.length === Object.keys(tokens).length
+          ? `${reason} Enrolment failed. Nothing was saved.`
+          : `${reason} Enrolment failed and the new token was removed. Your existing token may now hold the value you pasted.`;
+      }
+
+      async function reconcile(target, tokens, message) {
         const status = target.view.settingsStatus;
         try {
           applyStatus(target, await request('GET', target.path));
@@ -2871,7 +2911,9 @@
           }
           target.secrets = {
             ...target.secrets,
-            ...Object.fromEntries(keys.map((key) => [key, null])),
+            ...Object.fromEntries(
+              Object.keys(tokens).map((key) => [key, null]),
+            ),
           };
           renderSummary(target);
           propagate(target);
@@ -2879,27 +2921,14 @@
             setStatus(
               status,
               'error',
-              `${reason} Enrolment failed and ureview could not check whether your saved token was removed. Reload the page to see it.`,
+              `${message} ureview could not re-read your settings. Reload the page to see what is saved.`,
             );
           }
           return;
         }
         renderSummary(target);
         propagate(target);
-        setStatus(
-          status,
-          'error',
-          rollbackMessage(target, keys, replaced, reason),
-        );
-      }
-
-      function rollbackMessage(target, keys, replaced, reason) {
-        if (keys.some((key) => target.secrets[key])) {
-          return `${reason} Enrolment failed and your saved token could not be removed. Unenrol to delete it.`;
-        }
-        return replaced
-          ? `${reason} Enrolment failed and the new token was removed. Your existing token may now hold the value you pasted.`
-          : `${reason} Nothing was saved.`;
+        setStatus(status, 'error', message);
       }
 
       async function saveTokens(target) {
