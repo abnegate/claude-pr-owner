@@ -315,12 +315,22 @@ describe('request gates', () => {
       { method: 'POST', path: '/auth/logout' },
       { method: 'DELETE', path: '/api/repositories/abnegate/edge' },
       {
+        method: 'DELETE',
+        path: '/api/repositories/abnegate/edge/tokens',
+        query: { oauth: 'true' },
+      },
+      {
         method: 'PUT',
         path: '/api/repositories/abnegate/edge/tokens',
         bodyText: '{"oauth":"token"}',
       },
       { method: 'PUT', path: '/api/organizations/appwrite/config' },
       { method: 'DELETE', path: '/api/organizations/appwrite' },
+      {
+        method: 'DELETE',
+        path: '/api/organizations/appwrite/tokens',
+        query: { push: 'true' },
+      },
     ];
     for (const request of requests) {
       assertFailure(
@@ -620,6 +630,8 @@ describe('HEAD and OPTIONS', () => {
       ['/auth/logout', 'POST, OPTIONS'],
       ['/api/repositories/abnegate/edge', 'GET, DELETE, HEAD, OPTIONS'],
       ['/api/organizations/appwrite/config', 'PUT, OPTIONS'],
+      ['/api/repositories/abnegate/edge/tokens', 'PUT, DELETE, OPTIONS'],
+      ['/api/organizations/appwrite/tokens', 'PUT, DELETE, OPTIONS'],
     ];
     for (const [path, allow] of cases) {
       const response = await send({ method: 'OPTIONS', path });
@@ -722,6 +734,7 @@ describe('App and rate limit errors', () => {
         },
         [`${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: NOT_FOUND,
         [`${base}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: NOT_FOUND,
+        [`${base}/secrets/UREVIEW_API_KEY_ABNEGATE`]: NOT_FOUND,
       },
     });
     const response = await context.send({

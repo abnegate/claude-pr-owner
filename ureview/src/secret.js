@@ -3,6 +3,7 @@ import { ValidationError } from './ValidationError.js';
 
 const KEYS = ['oauth', 'push'];
 const MAXIMUM_BYTES = 48 * 1024;
+const SELECTED = 'true';
 
 export async function encrypt(publicKey, value) {
   await sodium.ready;
@@ -46,4 +47,20 @@ export function validateTokens(body) {
     throw new ValidationError('Provide oauth or push.');
   }
   return tokens;
+}
+
+export function validateSelection(query) {
+  const names = Object.keys(query ?? {});
+  for (const name of names) {
+    if (!KEYS.includes(name)) {
+      throw new ValidationError(`Unknown token: ${name}.`);
+    }
+    if (query[name] !== SELECTED) {
+      throw new ValidationError(`${name} must be true.`);
+    }
+  }
+  if (names.length === 0) {
+    throw new ValidationError('Select oauth or push.');
+  }
+  return Object.fromEntries(names.map((name) => [name, true]));
 }

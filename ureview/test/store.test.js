@@ -22,6 +22,7 @@ function absent(base) {
     [`GET ${base}/variables/UREVIEW_ABNEGATE`]: NOT_FOUND,
     [`GET ${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: NOT_FOUND,
     [`GET ${base}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`]: NOT_FOUND,
   };
 }
 
@@ -67,7 +68,7 @@ function decrypt(encrypted, pair) {
 }
 
 describe('Store.status', () => {
-  test('reads the variable and both secrets when present', async () => {
+  test('reads the variable and every secret when present', async () => {
     const { fetch, calls } = mockFetch({
       [`GET ${repositoryBase}/variables/UREVIEW_ABNEGATE`]: {
         data: {
@@ -81,13 +82,17 @@ describe('Store.status', () => {
       [`GET ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: {
         data: { name: 'UREVIEW_PUSH_TOKEN_ABNEGATE' },
       },
+      [`GET ${repositoryBase}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_API_KEY_ABNEGATE' },
+      },
     });
     const status = await repository(fetch).status(names);
     assert.deepEqual(status, {
       config: { review: true, severities: 'critical,high' },
-      secrets: { oauth: true, push: true },
+      secrets: { oauth: true, push: true, apiKey: true },
     });
     assert.deepEqual(keys(calls).sort(), [
+      `GET ${repositoryBase}/secrets/UREVIEW_API_KEY_ABNEGATE`,
       `GET ${repositoryBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
       `GET ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`,
       `GET ${repositoryBase}/variables/UREVIEW_ABNEGATE`,
@@ -102,7 +107,21 @@ describe('Store.status', () => {
     const status = await repository(fetch).status(names);
     assert.deepEqual(status, {
       config: null,
-      secrets: { oauth: false, push: false },
+      secrets: { oauth: false, push: false, apiKey: false },
+    });
+  });
+
+  test('reports a hand-set API key on its own', async () => {
+    const { fetch } = mockFetch({
+      ...absent(repositoryBase),
+      [`GET ${repositoryBase}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_API_KEY_ABNEGATE' },
+      },
+    });
+    const status = await repository(fetch).status(names);
+    assert.deepEqual(status, {
+      config: null,
+      secrets: { oauth: false, push: false, apiKey: true },
     });
   });
 
@@ -116,7 +135,7 @@ describe('Store.status', () => {
     const status = await repository(fetch).status(names);
     assert.deepEqual(status, {
       config: null,
-      secrets: { oauth: false, push: true },
+      secrets: { oauth: false, push: true, apiKey: false },
     });
   });
 
@@ -144,7 +163,7 @@ describe('Store.status', () => {
     const status = await organization(fetch).status(names);
     assert.deepEqual(status, {
       config: { bots: false },
-      secrets: { oauth: true, push: false },
+      secrets: { oauth: true, push: false, apiKey: false },
     });
     assert.ok(calls.every((call) => call.key.includes(organizationBase)));
     assert.ok(
@@ -694,6 +713,81 @@ describe('Store.remove', () => {
   });
 });
 
+describe('Store.removeTokens', () => {
+  const oauth = `DELETE ${repositoryBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`;
+  const push = `DELETE ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`;
+
+  test('deletes both token secrets when both are selected', async () => {
+    const { fetch, calls } = mockFetch({
+      [oauth]: { status: 204 },
+      [push]: { status: 204 },
+    });
+    await repository(fetch).removeTokens(names, { oauth: true, push: true });
+    assert.deepEqual(keys(calls).sort(), [oauth, push]);
+    for (const call of calls) {
+      assert.equal(call.headers.get('authorization'), 'Bearer ghs_install');
+    }
+  });
+
+  test('deletes only the selected token secret', async () => {
+    for (const [selection, expected] of [
+      [{ oauth: true }, oauth],
+      [{ push: true }, push],
+      [{ oauth: true, push: false }, oauth],
+    ]) {
+      const { fetch, calls } = mockFetch({ [expected]: { status: 204 } });
+      await repository(fetch).removeTokens(names, selection);
+      assert.deepEqual(keys(calls), [expected]);
+    }
+  });
+
+  test('never deletes the API key, the variable, or unselected secrets', async () => {
+    const { fetch, calls } = mockFetch({ [push]: { status: 204 } });
+    await repository(fetch).removeTokens(names, {
+      push: true,
+      apiKey: true,
+      variable: true,
+    });
+    assert.deepEqual(keys(calls), [push]);
+  });
+
+  test('deletes nothing when nothing is selected', async () => {
+    const { fetch, calls } = mockFetch({});
+    await repository(fetch).removeTokens(names, {});
+    assert.deepEqual(calls, []);
+  });
+
+  test('tolerates 404 for a secret that no longer exists', async () => {
+    const { fetch, calls } = mockFetch({
+      [oauth]: NOT_FOUND,
+      [push]: { status: 204 },
+    });
+    await repository(fetch).removeTokens(names, { oauth: true, push: true });
+    assert.equal(calls.length, 2);
+  });
+
+  test('uses the organization base', async () => {
+    const { fetch, calls } = mockFetch({
+      [oauth.replace(repositoryBase, organizationBase)]: { status: 204 },
+    });
+    await organization(fetch).removeTokens(names, { oauth: true });
+    assert.deepEqual(keys(calls), [
+      `DELETE ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
+    ]);
+    assert.equal(calls[0].headers.get('authorization'), 'Bearer gho_user');
+  });
+
+  test('throws GitHubError on any other status', async () => {
+    const { fetch } = mockFetch({
+      [oauth]: { status: 403, data: { message: 'Forbidden' } },
+    });
+    await assert.rejects(
+      repository(fetch).removeTokens(names, { oauth: true }),
+      (error) => error instanceof GitHubError && error.status === 403,
+    );
+  });
+});
+
 describe('Store.inherited', () => {
   const variablesKey = `GET ${repositoryBase}/organization-variables`;
   const secretsKey = `GET ${repositoryBase}/organization-secrets`;
@@ -723,7 +817,7 @@ describe('Store.inherited', () => {
     const inherited = await repository(fetch).inherited(names);
     assert.deepEqual(inherited, {
       config: { review: true },
-      secrets: { oauth: false, push: true },
+      secrets: { oauth: false, push: true, apiKey: false },
     });
     const variablesCall = calls.find((call) => call.key === variablesKey);
     const secretsCall = calls.find((call) => call.key === secretsKey);
@@ -763,7 +857,7 @@ describe('Store.inherited', () => {
     const inherited = await repository(fetch).inherited(names);
     assert.deepEqual(inherited, {
       config: { bots: true },
-      secrets: { oauth: true, push: false },
+      secrets: { oauth: true, push: false, apiKey: false },
     });
     assert.equal(calls.length, 4);
   });
@@ -772,13 +866,32 @@ describe('Store.inherited', () => {
     const { fetch } = mockFetch({
       [variablesKey]: { data: { variables: [] } },
       [secretsKey]: {
-        data: { secrets: [{ name: 'UREVIEW_API_KEY_ABNEGATE' }] },
+        data: {
+          secrets: [
+            { name: 'UREVIEW_API_KEY_SOMEONE' },
+            { name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE_EXTRA' },
+          ],
+        },
       },
     });
     const inherited = await repository(fetch).inherited(names);
     assert.deepEqual(inherited, {
       config: null,
-      secrets: { oauth: false, push: false },
+      secrets: { oauth: false, push: false, apiKey: false },
+    });
+  });
+
+  test('reports an inherited organization API key', async () => {
+    const { fetch } = mockFetch({
+      [variablesKey]: { data: { variables: [] } },
+      [secretsKey]: {
+        data: { secrets: [{ name: 'ureview_api_key_abnegate' }] },
+      },
+    });
+    const inherited = await repository(fetch).inherited(names);
+    assert.deepEqual(inherited, {
+      config: null,
+      secrets: { oauth: false, push: false, apiKey: true },
     });
   });
 

@@ -10,7 +10,7 @@ import {
 } from './github.js';
 import { names } from './names.js';
 import { empty, json } from './response.js';
-import { validateTokens } from './secret.js';
+import { validateSelection, validateTokens } from './secret.js';
 import { Store } from './Store.js';
 
 const READ = Object.freeze({
@@ -26,7 +26,7 @@ const WRITE = Object.freeze({
 const ORGANIZATION = 'Organization';
 const UNINHERITED = Object.freeze({
   config: null,
-  secrets: Object.freeze({ oauth: false, push: false }),
+  secrets: Object.freeze({ oauth: false, push: false, apiKey: false }),
 });
 
 export async function list(context) {
@@ -81,6 +81,13 @@ export async function saveTokens(context) {
   const tokens = validateTokens(context.body);
   const { store } = await authorize(context, WRITE);
   await store.saveSecrets(names(context.user.login), tokens);
+  return empty(204);
+}
+
+export async function removeTokens(context) {
+  const tokens = validateSelection(context.query);
+  const { store } = await authorize(context, WRITE);
+  await store.removeTokens(names(context.user.login), tokens);
   return empty(204);
 }
 

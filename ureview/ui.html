@@ -1735,7 +1735,10 @@
     <template id="settings-template">
       <form class="section" data-part="tokens" novalidate>
         <div class="section-head">
-          <h3 class="label">Tokens</h3>
+          <div class="field-head">
+            <h3 class="label">Tokens</h3>
+            <span class="chip" data-part="api-key-chip" hidden></span>
+          </div>
           <p class="hint">
             Saved as encrypted GitHub Actions secrets. They cannot be read back,
             only replaced.
@@ -1924,6 +1927,14 @@
         set: { text: 'Set', className: 'chip set' },
         inherited: { text: 'Set in organization', className: 'chip inherited' },
         missing: { text: 'Not set', className: 'chip' },
+      });
+
+      const API_KEY_STATES = Object.freeze({
+        set: { text: 'API key set', className: 'chip set' },
+        inherited: {
+          text: 'API key set in organization',
+          className: 'chip inherited',
+        },
       });
 
       const SIGNIN_NOTICES = new Map([
@@ -2200,7 +2211,11 @@
       }
 
       function normalizeSecrets(value) {
-        return { oauth: value?.oauth === true, push: value?.push === true };
+        return {
+          oauth: value?.oauth === true,
+          push: value?.push === true,
+          apiKey: value?.apiKey === true,
+        };
       }
 
       function applyStatus(target, data) {
@@ -2467,6 +2482,7 @@
           tokenNote: part(fragment, 'token-note'),
           oauthChip: part(fragment, 'oauth-chip'),
           pushChip: part(fragment, 'push-chip'),
+          apiKeyChip: part(fragment, 'api-key-chip'),
           settingsStatus: part(fragment, 'settings-status'),
           tokensStatus: part(fragment, 'tokens-status'),
           removeStatus: part(fragment, 'remove-status'),
@@ -2622,6 +2638,12 @@
           chip.className = TOKEN_STATES[key].className;
           chip.textContent = TOKEN_STATES[key].text;
         }
+        const apiKey = API_KEY_STATES[tokenState(target, 'apiKey')];
+        view.apiKeyChip.hidden = apiKey === undefined;
+        if (apiKey !== undefined) {
+          view.apiKeyChip.className = apiKey.className;
+          view.apiKeyChip.textContent = apiKey.text;
+        }
 
         const note = noteFor(target);
         view.note.hidden = note === '';
@@ -2730,6 +2752,7 @@
       function applyTokens(target, tokens) {
         target.view.tokens.reset();
         target.secrets = {
+          ...target.secrets,
           oauth: target.secrets.oauth || tokens.oauth !== undefined,
           push: target.secrets.push || tokens.push !== undefined,
         };
@@ -2765,7 +2788,10 @@
         }
         const enrolling = target.config === null;
         const pristine =
-          enrolling && !target.secrets.oauth && !target.secrets.push;
+          enrolling &&
+          !target.secrets.oauth &&
+          !target.secrets.push &&
+          !target.secrets.apiKey;
         const messages = [];
         let saved = false;
         setStatus(view.settingsStatus, '', '');
@@ -2811,7 +2837,10 @@
         const status = target.view.settingsStatus;
         const reason = describe(error, target);
         try {
-          await request('DELETE', target.path);
+          const created = new URLSearchParams(
+            Object.keys(tokens).map((key) => [key, 'true']),
+          );
+          await request('DELETE', `${target.path}/tokens?${created}`);
         } catch (undo) {
           applyTokens(target, tokens);
           propagate(target);

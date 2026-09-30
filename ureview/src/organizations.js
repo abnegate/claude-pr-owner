@@ -3,7 +3,7 @@ import { GitHubError } from './GitHubError.js';
 import { installations, request } from './github.js';
 import { names } from './names.js';
 import { empty, json } from './response.js';
-import { validateTokens } from './secret.js';
+import { validateSelection, validateTokens } from './secret.js';
 import { Store } from './Store.js';
 
 const DENIED = new Set([403, 404]);
@@ -56,6 +56,14 @@ export async function saveTokens(context) {
     organization: params.organization,
     repositorySelection,
   }).saveSecrets(names(user.login), tokens);
+  return empty(204);
+}
+
+export async function removeTokens(context) {
+  const { fetch, params, user } = context;
+  const tokens = validateSelection(context.query);
+  await installation(fetch, user.token, params.organization);
+  await store(context).removeTokens(names(user.login), tokens);
   return empty(204);
 }
 
@@ -124,7 +132,7 @@ async function describe(fetch, token, login, identifiers) {
       admin: false,
       reason: reason(status, data),
       config: null,
-      secrets: { oauth: false, push: false },
+      secrets: { oauth: false, push: false, apiKey: false },
     };
   }
   const { config, secrets } = await Store.organization({

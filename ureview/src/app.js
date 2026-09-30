@@ -216,6 +216,11 @@ export function createApp({ environment, fetch, pages, now = Date.now }) {
     ),
     compile(
       'DELETE',
+      '/api/repositories/:owner/:repository/tokens',
+      repositories.removeTokens,
+    ),
+    compile(
+      'DELETE',
       '/api/repositories/:owner/:repository',
       repositories.remove,
     ),
@@ -230,6 +235,11 @@ export function createApp({ environment, fetch, pages, now = Date.now }) {
       'PUT',
       '/api/organizations/:organization/tokens',
       organizations.saveTokens,
+    ),
+    compile(
+      'DELETE',
+      '/api/organizations/:organization/tokens',
+      organizations.removeTokens,
     ),
     compile('DELETE', '/api/organizations/:organization', organizations.remove),
   ];

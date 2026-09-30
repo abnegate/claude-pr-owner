@@ -21,7 +21,10 @@ const WRITE = {
   actions_variables: 'write',
   metadata: 'read',
 };
-const NONE = { config: null, secrets: { oauth: false, push: false } };
+const NONE = {
+  config: null,
+  secrets: { oauth: false, push: false, apiKey: false },
+};
 const keyPair = sodium.crypto_box_keypair();
 const repositoryKey = sodium.to_base64(
   keyPair.publicKey,
@@ -158,6 +161,7 @@ function statusRoutes({
       data: { name: `UREVIEW_OAUTH_TOKEN_${key}` },
     },
     [`GET ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_API_KEY_${key}`]: NOT_FOUND,
     [`GET ${base}/organization-variables`]: {
       data: {
         total_count: 2,
@@ -335,7 +339,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
       name: 'edge',
       fullName: 'abnegate/edge',
       config: { review: true, severities: 'critical,high' },
-      secrets: { oauth: true, push: false },
+      secrets: { oauth: true, push: false, apiKey: false },
       inherited: NONE,
     });
     assert.deepEqual(keys(calls).slice(0, 3), [
@@ -352,6 +356,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
     });
     const settings = calls.slice(3);
     assert.deepEqual(keys(settings).sort(), [
+      'GET /repos/abnegate/edge/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
       'GET /repos/abnegate/edge/actions/variables/UREVIEW_ABNEGATE',
@@ -370,7 +375,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(response.data.inherited, {
       config: { improvement: true },
-      secrets: { oauth: false, push: true },
+      secrets: { oauth: false, push: true, apiKey: false },
     });
     const inherited = calls.filter((call) =>
       call.key.includes('/actions/organization-'),
@@ -409,6 +414,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
       permissions: READ,
     });
     assert.deepEqual(keys(actionsCalls(calls)).sort(), [
+      'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
       'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
       'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
       'GET /repos/Abnegate/Edge/actions/variables/UREVIEW_ABNEGATE',
@@ -423,10 +429,46 @@ describe('GET /api/repositories/:owner/:repository', () => {
 
     assert.equal(response.status, 200);
     assert.deepEqual(keys(actionsCalls(calls)).sort(), [
+      'GET /repos/abnegate/edge/actions/secrets/UREVIEW_API_KEY_SOME_USER',
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_OAUTH_TOKEN_SOME_USER',
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_PUSH_TOKEN_SOME_USER',
       'GET /repos/abnegate/edge/actions/variables/UREVIEW_SOME_USER',
     ]);
+  });
+
+  test('reports a hand-set API key at the repository and in the organization', async () => {
+    const base = '/repos/appwrite-labs/edge/actions';
+    const { send } = client({
+      ...statusRoutes({ owner: 'appwrite-labs', type: 'Organization' }),
+      [`GET ${base}/variables/UREVIEW_ABNEGATE`]: NOT_FOUND,
+      [`GET ${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: NOT_FOUND,
+      [`GET ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_API_KEY_ABNEGATE' },
+      },
+      [`GET ${base}/organization-secrets`]: {
+        data: {
+          total_count: 2,
+          secrets: [
+            { name: 'UREVIEW_API_KEY_SOMEONE' },
+            { name: 'UREVIEW_API_KEY_ABNEGATE' },
+          ],
+        },
+      },
+    });
+    const response = await send('GET', '/api/repositories/appwrite-labs/edge');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.data.config, null);
+    assert.deepEqual(response.data.secrets, {
+      oauth: false,
+      push: false,
+      apiKey: true,
+    });
+    assert.deepEqual(response.data.inherited.secrets, {
+      oauth: false,
+      push: false,
+      apiKey: true,
+    });
   });
 });
 
@@ -439,13 +481,19 @@ describe('repository push gate', () => {
       '/api/repositories/abnegate/edge/tokens',
       { oauth: 'sk-ant-oat01-token', push: 'github_pat_token' },
     ],
+    [
+      'DELETE',
+      '/api/repositories/abnegate/edge/tokens',
+      undefined,
+      { oauth: 'true', push: 'true' },
+    ],
     ['DELETE', '/api/repositories/abnegate/edge', undefined],
   ];
 
-  for (const [method, path, body] of writes) {
+  for (const [method, path, body, query] of writes) {
     test(`${method} ${path} without push access is forbidden and mints nothing`, async () => {
       const { send, calls } = client(gated());
-      const response = await send(method, path, body);
+      const response = await send(method, path, body, query);
 
       assert.equal(response.status, 403);
       assert.equal(response.data.error, 'forbidden');
@@ -459,7 +507,7 @@ describe('repository push gate', () => {
           'GET /repos/abnegate/edge': { data: { full_name: 'abnegate/edge' } },
         }),
       );
-      const response = await send(method, path, body);
+      const response = await send(method, path, body, query);
 
       assert.equal(response.status, 403);
       assert.deepEqual(keys(calls), ['GET /repos/abnegate/edge']);
@@ -473,7 +521,7 @@ describe('repository push gate', () => {
           },
         }),
       );
-      const response = await send(method, path, body);
+      const response = await send(method, path, body, query);
 
       assert.equal(response.status, 403);
       assert.deepEqual(keys(calls), ['GET /repos/abnegate/edge']);
@@ -493,8 +541,11 @@ describe('repository push gate', () => {
       routes[
         'GET /repos/abnegate/edge-renamed/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE'
       ] = NOT_FOUND;
+      routes[
+        'GET /repos/abnegate/edge-renamed/actions/secrets/UREVIEW_API_KEY_ABNEGATE'
+      ] = NOT_FOUND;
       const { send, calls } = client(routes);
-      const response = await send(method, path, body);
+      const response = await send(method, path, body, query);
 
       assert.ok(response.status < 300, `status ${response.status}`);
       assert.deepEqual(keys(calls).slice(0, 3), [
@@ -521,7 +572,7 @@ describe('repository push gate', () => {
           },
         }),
       );
-      const response = await send(method, path, body);
+      const response = await send(method, path, body, query);
 
       assert.equal(response.status, 502);
       assert.equal(response.data.error, 'github');
@@ -533,7 +584,7 @@ describe('repository push gate', () => {
         ...writeRoutes(),
         'GET /repos/abnegate/edge': NOT_FOUND,
       });
-      const response = await send(method, path, body);
+      const response = await send(method, path, body, query);
 
       assert.equal(response.status, 404);
       assert.equal(response.data.error, 'not_found');
@@ -545,7 +596,7 @@ describe('repository push gate', () => {
         ...writeRoutes(),
         'GET /repos/abnegate/edge/installation': NOT_FOUND,
       });
-      const response = await send(method, path, body);
+      const response = await send(method, path, body, query);
 
       assert.equal(response.status, 404);
       assert.equal(response.data.error, 'not_found');
@@ -818,6 +869,100 @@ describe('PUT /api/repositories/:owner/:repository/tokens', () => {
         calls.filter((call) => call.method === 'PUT'),
         [],
       );
+    });
+  }
+});
+
+describe('DELETE /api/repositories/:owner/:repository/tokens', () => {
+  const path = '/api/repositories/abnegate/edge/tokens';
+
+  test('deletes only the selected secrets with a repository-scoped write token', async () => {
+    const { send, calls } = client(writeRoutes());
+    const response = await send('DELETE', path, undefined, {
+      oauth: 'true',
+      push: 'true',
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal(response.body, '');
+    assert.deepEqual(keys(calls).slice(0, 3), [
+      'GET /repos/abnegate/edge',
+      'GET /repos/abnegate/edge/installation',
+      'POST /app/installations/42/access_tokens',
+    ]);
+    assert.deepEqual(calls[2].body, {
+      repositories: ['edge'],
+      permissions: WRITE,
+    });
+    const deletes = calls.slice(3);
+    assert.deepEqual(keys(deletes).sort(), [
+      'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
+      'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
+    ]);
+    for (const call of deletes) {
+      assert.equal(bearer(call), 'Bearer ghs_write', call.key);
+    }
+  });
+
+  test('leaves the unselected token, the API key and the variable in place', async () => {
+    const { send, calls } = client(writeRoutes());
+    const response = await send('DELETE', path, undefined, { oauth: 'true' });
+
+    assert.equal(response.status, 204);
+    assert.deepEqual(keys(actionsCalls(calls)), [
+      'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
+    ]);
+  });
+
+  test('names the secrets after the signed-in user, not the repository owner', async () => {
+    const { send, calls } = client(
+      writeRoutes({ owner: 'appwrite-labs', key: 'SOME_USER' }),
+      { login: 'some-user' },
+    );
+    const response = await send(
+      'DELETE',
+      '/api/repositories/appwrite-labs/edge/tokens',
+      undefined,
+      { push: 'true' },
+    );
+
+    assert.equal(response.status, 204);
+    assert.deepEqual(keys(actionsCalls(calls)), [
+      'DELETE /repos/appwrite-labs/edge/actions/secrets/UREVIEW_PUSH_TOKEN_SOME_USER',
+    ]);
+  });
+
+  test('tolerates a selected secret that no longer exists', async () => {
+    const { send } = client({
+      ...writeRoutes(),
+      'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE':
+        NOT_FOUND,
+    });
+    const response = await send('DELETE', path, undefined, {
+      oauth: 'true',
+      push: 'true',
+    });
+
+    assert.equal(response.status, 204);
+  });
+
+  const rejected = [
+    ['no selection', {}],
+    ['the API key', { apiKey: 'true' }],
+    ['the API key alongside a token', { oauth: 'true', apiKey: 'true' }],
+    ['the variable', { variable: 'true' }],
+    ['a secret name', { UREVIEW_API_KEY_ABNEGATE: 'true' }],
+    ['a false selection', { oauth: 'false' }],
+  ];
+
+  for (const [label, query] of rejected) {
+    test(`rejects ${label} without calling GitHub`, async () => {
+      const { send, calls } = client(writeRoutes());
+      const response = await send('DELETE', path, undefined, query);
+
+      assert.equal(response.status, 400);
+      assert.equal(response.data.error, 'invalid');
+      assert.deepEqual(calls, []);
     });
   }
 });

@@ -62,12 +62,13 @@ export class Store {
   }
 
   async status(names) {
-    const [config, oauth, push] = await Promise.all([
+    const [config, oauth, push, apiKey] = await Promise.all([
       this.#variable(names.variable),
       this.#secretExists(names.oauth),
       this.#secretExists(names.push),
+      this.#secretExists(names.apiKey),
     ]);
-    return { config, secrets: { oauth, push } };
+    return { config, secrets: { oauth, push, apiKey } };
   }
 
   async inherited(names) {
@@ -81,6 +82,7 @@ export class Store {
       secrets: {
         oauth: secrets.some((entry) => matches(entry, names.oauth)),
         push: secrets.some((entry) => matches(entry, names.push)),
+        apiKey: secrets.some((entry) => matches(entry, names.apiKey)),
       },
     };
   }
@@ -141,6 +143,22 @@ export class Store {
         ),
       ),
     ]);
+  }
+
+  async removeTokens(names, { oauth = false, push = false }) {
+    const selected = [
+      [names.oauth, oauth],
+      [names.push, push],
+    ].filter(([, chosen]) => chosen === true);
+    await Promise.all(
+      selected.map(([name]) =>
+        this.#send(
+          'DELETE',
+          `/secrets/${encodeURIComponent(name)}`,
+          [204, 404],
+        ),
+      ),
+    );
   }
 
   async #variable(name) {

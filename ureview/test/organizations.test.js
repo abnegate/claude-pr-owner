@@ -13,7 +13,7 @@ const organizationKey = sodium.to_base64(
   keyPair.publicKey,
   sodium.base64_variants.ORIGINAL,
 );
-const ABSENT = { oauth: false, push: false };
+const ABSENT = { oauth: false, push: false, apiKey: false };
 
 function client(routes, { login = 'abnegate' } = {}) {
   const { fetch, calls } = mockFetch(routes);
@@ -23,11 +23,11 @@ function client(routes, { login = 'abnegate' } = {}) {
     token: USER_TOKEN,
     avatar: 'https://avatars.githubusercontent.com/u/1',
   });
-  const send = async (method, path, body) => {
+  const send = async (method, path, body, query = {}) => {
     const response = await handle({
       method,
       path,
-      query: {},
+      query,
       headers: { cookie, origin: url },
       bodyText: body === undefined ? '' : JSON.stringify(body),
     });
@@ -111,6 +111,7 @@ function routes({ key = 'ABNEGATE', repositorySelection = 'all' } = {}) {
       data: { name: `UREVIEW_OAUTH_TOKEN_${key}`, visibility: 'all' },
     },
     [`GET ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_API_KEY_${key}`]: NOT_FOUND,
     [`PATCH ${base}/variables/UREVIEW_${key}`]: { status: 204 },
     [`POST ${base}/variables`]: { status: 201 },
     [`PUT ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 201 },
@@ -126,7 +127,7 @@ const admin = {
   login: 'appwrite-labs',
   admin: true,
   config: { review: true, model: 'claude-sonnet-4-6' },
-  secrets: { oauth: true, push: false },
+  secrets: { oauth: true, push: false, apiKey: false },
 };
 
 function byLogin(organizations) {
@@ -232,6 +233,7 @@ describe('GET /api/organizations', () => {
         .filter((key) => key.startsWith('GET /orgs/appwrite-labs/'))
         .sort(),
       [
+        'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
         'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
         'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
         'GET /orgs/appwrite-labs/actions/secrets/public-key',
@@ -268,6 +270,35 @@ describe('GET /api/organizations/:organization', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(response.data, admin);
     assertUserTokenOnly(calls);
+  });
+
+  test('reports a hand-set organization API key', async () => {
+    const { send } = client({
+      ...routes(),
+      'GET /orgs/appwrite-labs/actions/variables/UREVIEW_ABNEGATE': NOT_FOUND,
+      'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE':
+        NOT_FOUND,
+      'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_API_KEY_ABNEGATE': {
+        data: { name: 'UREVIEW_API_KEY_ABNEGATE', visibility: 'all' },
+      },
+    });
+    const single = await send('GET', '/api/organizations/appwrite-labs');
+    const listing = await send('GET', '/api/organizations');
+    const expected = {
+      login: 'appwrite-labs',
+      admin: true,
+      config: null,
+      secrets: { oauth: false, push: false, apiKey: true },
+    };
+
+    assert.equal(single.status, 200);
+    assert.deepEqual(single.data, expected);
+    assert.deepEqual(
+      listing.data.organizations.find(
+        (organization) => organization.login === 'appwrite-labs',
+      ),
+      expected,
+    );
   });
 
   test('returns a non-admin organization without reading its settings', async () => {
@@ -614,6 +645,104 @@ describe('PUT /api/organizations/:organization/tokens', () => {
         calls.filter((call) => call.method === 'PUT'),
         [],
       );
+    });
+  }
+});
+
+describe('DELETE /api/organizations/:organization/tokens', () => {
+  const path = '/api/organizations/appwrite-labs/tokens';
+
+  test('deletes only the selected secrets with the user token', async () => {
+    const { send, calls } = client(routes());
+    const response = await send('DELETE', path, undefined, {
+      oauth: 'true',
+      push: 'true',
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal(response.body, '');
+    assert.deepEqual(keys(calls.filter((call) => call.method === 'GET')), [
+      'GET /user/installations',
+    ]);
+    const deletes = calls.filter((call) => call.method === 'DELETE');
+    assert.deepEqual(keys(deletes).sort(), [
+      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
+      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
+    ]);
+    assertUserTokenOnly(calls);
+  });
+
+  test('leaves the unselected token, the API key and the variable in place', async () => {
+    const { send, calls } = client(routes());
+    const response = await send('DELETE', path, undefined, { oauth: 'true' });
+
+    assert.equal(response.status, 204);
+    assert.deepEqual(keys(calls.filter((call) => call.method === 'DELETE')), [
+      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
+    ]);
+  });
+
+  test('names the secrets after the signed-in user', async () => {
+    const { send, calls } = client(
+      {
+        ...routes({ key: 'SOME_USER' }),
+        'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_SOME_USER':
+          { status: 204 },
+      },
+      { login: 'some-user' },
+    );
+    const response = await send('DELETE', path, undefined, { push: 'true' });
+
+    assert.equal(response.status, 204);
+    assert.deepEqual(keys(calls.filter((call) => call.method === 'DELETE')), [
+      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_SOME_USER',
+    ]);
+  });
+
+  test('returns not_found without deleting when the organization is not installed', async () => {
+    const { send, calls } = client(routes());
+    const response = await send(
+      'DELETE',
+      '/api/organizations/missing-org/tokens',
+      undefined,
+      { oauth: 'true' },
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(response.data.error, 'not_found');
+    assert.deepEqual(keys(calls), ['GET /user/installations']);
+  });
+
+  test('maps a GitHub 403 for a non-admin to forbidden', async () => {
+    const { send } = client({
+      ...routes(),
+      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE':
+        {
+          status: 403,
+          data: { message: 'Must have admin rights to Repository.' },
+        },
+    });
+    const response = await send('DELETE', path, undefined, { oauth: 'true' });
+
+    assert.equal(response.status, 403);
+    assert.equal(response.data.error, 'forbidden');
+  });
+
+  const rejected = [
+    ['no selection', {}],
+    ['the API key', { apiKey: 'true' }],
+    ['the API key alongside a token', { push: 'true', apiKey: 'true' }],
+    ['a secret name', { UREVIEW_API_KEY_ABNEGATE: 'true' }],
+  ];
+
+  for (const [label, query] of rejected) {
+    test(`rejects ${label} without calling GitHub`, async () => {
+      const { send, calls } = client(routes());
+      const response = await send('DELETE', path, undefined, query);
+
+      assert.equal(response.status, 400);
+      assert.equal(response.data.error, 'invalid');
+      assert.deepEqual(calls, []);
     });
   }
 });
