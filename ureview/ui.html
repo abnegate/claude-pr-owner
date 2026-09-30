@@ -1610,7 +1610,7 @@
                 <div>
                   <p class="step-title">Choose tasks</p>
                   <p class="step-text">
-                    Open a repository or organization below, add your Claude
+                    Open an organization or repository below, add your Claude
                     token, choose what Claude should do, and enrol.
                   </p>
                 </div>
@@ -1626,6 +1626,26 @@
                 </div>
               </li>
             </ol>
+          </section>
+
+          <section
+            class="group"
+            id="organizations"
+            aria-labelledby="organizations-heading"
+            hidden
+          >
+            <div class="group-head">
+              <h2 id="organizations-heading">
+                Organizations
+                <span class="count" id="organization-count" hidden></span>
+              </h2>
+            </div>
+            <p class="group-note">
+              Defaults for your pull requests across an organization. Only
+              organization admins can change them.
+            </p>
+            <div class="list" id="organization-list"></div>
+            <div class="muted-note" id="organization-note" hidden></div>
           </section>
 
           <section class="group" aria-labelledby="repositories-heading">
@@ -1670,26 +1690,6 @@
               role="status"
               hidden
             ></p>
-          </section>
-
-          <section
-            class="group"
-            id="organizations"
-            aria-labelledby="organizations-heading"
-            hidden
-          >
-            <div class="group-head">
-              <h2 id="organizations-heading">
-                Organizations
-                <span class="count" id="organization-count" hidden></span>
-              </h2>
-            </div>
-            <p class="group-note">
-              Defaults for your pull requests across an organization. Only
-              organization admins can change them.
-            </p>
-            <div class="list" id="organization-list"></div>
-            <div class="muted-note" id="organization-note" hidden></div>
           </section>
         </div>
       </div>
