@@ -611,6 +611,7 @@ describe('repository push gate', () => {
 
 describe('PUT /api/repositories/:owner/:repository/config', () => {
   const body = {
+    effort: 'max',
     severities: 'high,critical,high',
     model: 'claude-sonnet-4-6',
     review: true,
@@ -621,9 +622,10 @@ describe('PUT /api/repositories/:owner/:repository/config', () => {
     comments: false,
     severities: 'critical,high',
     model: 'claude-sonnet-4-6',
+    effort: 'max',
   };
   const serialized =
-    '{"review":true,"comments":false,"severities":"critical,high","model":"claude-sonnet-4-6"}';
+    '{"review":true,"comments":false,"severities":"critical,high","model":"claude-sonnet-4-6","effort":"max"}';
 
   test('mints a write token scoped to the repository and patches the variable', async () => {
     const { send, calls } = client(writeRoutes());
@@ -727,6 +729,8 @@ describe('PUT /api/repositories/:owner/:repository/config', () => {
     ['an unknown severity', { severities: 'critical,urgent' }],
     ['an empty severity list', { severities: '' }],
     ['a model with spaces', { model: 'claude opus' }],
+    ['an unknown effort', { effort: 'extreme' }],
+    ['a non-string effort', { effort: 3 }],
     ['an array', [true]],
     ['null', null],
   ];

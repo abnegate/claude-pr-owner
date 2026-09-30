@@ -298,13 +298,14 @@ describe('Store.variable', () => {
 
 describe('Store.saveConfig', () => {
   const config = {
+    effort: 'xhigh',
     model: 'claude-opus-5-5',
     severities: 'critical,high',
     comments: false,
     review: true,
   };
   const value =
-    '{"review":true,"comments":false,"severities":"critical,high","model":"claude-opus-5-5"}';
+    '{"review":true,"comments":false,"severities":"critical,high","model":"claude-opus-5-5","effort":"xhigh"}';
 
   test('updates the repository variable with PATCH', async () => {
     const { fetch, calls } = mockFetch({

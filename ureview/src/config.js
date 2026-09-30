@@ -3,8 +3,9 @@ import { ValidationError } from './ValidationError.js';
 export const FLAGS = ['review', 'comments', 'improvement', 'healing', 'bots'];
 export const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 export const MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9]+\])?$/;
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-const KEYS = new Set([...FLAGS, 'severities', 'model']);
+const KEYS = new Set([...FLAGS, 'severities', 'model', 'effort']);
 
 function isPlainObject(value) {
   if (value === null || typeof value !== 'object') {
@@ -34,6 +35,13 @@ function canonicalModel(value) {
     return '';
   }
   return MODEL.test(model) ? model : null;
+}
+
+function canonicalEffort(value) {
+  if (value === '') {
+    return '';
+  }
+  return EFFORTS.includes(value) ? value : null;
 }
 
 export function validate(body) {
@@ -75,6 +83,15 @@ export function validate(body) {
       config.model = model;
     }
   }
+  if ('effort' in body) {
+    const effort = canonicalEffort(body.effort);
+    if (effort === null) {
+      throw new ValidationError(`effort must be one of ${EFFORTS.join(', ')}.`);
+    }
+    if (effort !== '') {
+      config.effort = effort;
+    }
+  }
   return config;
 }
 
@@ -104,6 +121,10 @@ export function parse(value) {
   const model = canonicalModel(body.model);
   if (model) {
     config.model = model;
+  }
+  const effort = canonicalEffort(body.effort);
+  if (effort) {
+    config.effort = effort;
   }
   return config;
 }

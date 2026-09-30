@@ -104,7 +104,7 @@ function routes({ key = 'ABNEGATE', repositorySelection = 'all' } = {}) {
     [`GET ${base}/variables/UREVIEW_${key}`]: {
       data: {
         name: `UREVIEW_${key}`,
-        value: '{"review":true,"model":"claude-sonnet-4-6"}',
+        value: '{"review":true,"model":"claude-sonnet-4-6","effort":"low"}',
         visibility: 'all',
       },
     },
@@ -127,7 +127,7 @@ function routes({ key = 'ABNEGATE', repositorySelection = 'all' } = {}) {
 const admin = {
   login: 'appwrite-labs',
   admin: true,
-  config: { review: true, model: 'claude-sonnet-4-6' },
+  config: { review: true, model: 'claude-sonnet-4-6', effort: 'low' },
   secrets: { oauth: true, push: false, apiKey: false },
 };
 
@@ -346,19 +346,20 @@ describe('GET /api/organizations/:organization', () => {
 });
 
 describe('PUT /api/organizations/:organization/config', () => {
-  const serialized = '{"review":true,"severities":"critical,low"}';
+  const serialized =
+    '{"review":true,"severities":"critical,low","effort":"medium"}';
 
   test('patches the user-named variable with the user token without changing its visibility', async () => {
     const { send, calls } = client(routes());
     const response = await send(
       'PUT',
       '/api/organizations/appwrite-labs/config',
-      { severities: 'low,critical', review: true },
+      { effort: 'medium', severities: 'low,critical', review: true },
     );
 
     assert.equal(response.status, 200);
     assert.deepEqual(response.data, {
-      config: { review: true, severities: 'critical,low' },
+      config: { review: true, severities: 'critical,low', effort: 'medium' },
     });
     const writes = calls.filter((call) => call.method !== 'GET');
     assert.deepEqual(keys(writes), [
@@ -380,7 +381,7 @@ describe('PUT /api/organizations/:organization/config', () => {
     const response = await send(
       'PUT',
       '/api/organizations/appwrite-labs/config',
-      { review: true, severities: 'critical,low' },
+      { review: true, severities: 'critical,low', effort: 'medium' },
     );
 
     assert.equal(response.status, 200);
