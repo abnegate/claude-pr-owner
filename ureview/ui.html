@@ -2764,16 +2764,22 @@
           throw error;
         }
         const enrolling = target.config === null;
+        const pristine =
+          enrolling && !target.secrets.oauth && !target.secrets.push;
         const messages = [];
+        let saved = false;
         setStatus(view.settingsStatus, '', '');
         setBusy(view.submit, true, 'Saving…');
         try {
           if (Object.keys(tokens).length > 0) {
             await request('PUT', `${target.path}/tokens`, tokens);
-            applyTokens(target, tokens);
+            saved = true;
             messages.push(savedTokensMessage(tokens));
           }
           const data = await request('PUT', `${target.path}/config`, body);
+          if (saved) {
+            applyTokens(target, tokens);
+          }
           target.config =
             normalizeConfig(data?.config) ?? normalizeConfig(body);
           renderSummary(target);
@@ -2782,11 +2788,46 @@
           setStatus(view.settingsStatus, 'success', messages.join(' '));
           propagate(target);
         } catch (error) {
-          reportRequestError(error, view.settingsStatus, target);
+          if (saved && pristine && error instanceof RequestError) {
+            await discardTokens(target, tokens, error);
+          } else {
+            if (saved) {
+              applyTokens(target, tokens);
+              propagate(target);
+            }
+            reportRequestError(error, view.settingsStatus, target);
+          }
         } finally {
           setBusy(view.submit, false);
           renderSubmit(target);
         }
+      }
+
+      async function discardTokens(target, tokens, error) {
+        if (error.status === 401) {
+          applyTokens(target, tokens);
+          return;
+        }
+        const status = target.view.settingsStatus;
+        const reason = describe(error, target);
+        try {
+          await request('DELETE', target.path);
+        } catch (undo) {
+          applyTokens(target, tokens);
+          propagate(target);
+          if (!(undo instanceof RequestError)) {
+            throw undo;
+          }
+          if (undo.status !== 401) {
+            setStatus(
+              status,
+              'error',
+              `${reason} Enrolment failed and your saved token could not be removed. Unenrol to delete it.`,
+            );
+          }
+          return;
+        }
+        setStatus(status, 'error', `${reason} Nothing was saved.`);
       }
 
       async function saveTokens(target) {
