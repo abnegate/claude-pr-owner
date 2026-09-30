@@ -1237,6 +1237,12 @@
         box-shadow: 0 0 0 3px var(--danger-ring);
       }
 
+      select.input {
+        padding-right: 8px;
+        font-family: var(--font-sans);
+        cursor: pointer;
+      }
+
       .token-grid {
         display: grid;
         grid-template-columns: minmax(0, 1fr);
@@ -1850,6 +1856,20 @@
                 A model id. Leave empty to use the workflow's model.
               </p>
             </div>
+            <div class="field">
+              <label class="label" data-for="effort">Effort</label>
+              <select class="input" name="effort" data-describe="effort-hint">
+                <option value="">Default (high)</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">Extra high</option>
+                <option value="max">Max</option>
+              </select>
+              <p class="hint" data-id="effort-hint">
+                How long Claude thinks before it acts. Higher levels cost more.
+              </p>
+            </div>
           </div>
         </div>
         <div class="actions">
@@ -1923,6 +1943,7 @@
       });
 
       const MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9]+\])?$/;
+      const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
       const AVATAR = 'https://avatars.githubusercontent.com/';
       const INSTALL = 'https://github.com/';
       const STATUS_DURATION = 5000;
@@ -2246,6 +2267,9 @@
         }
         if (typeof value.model === 'string' && value.model !== '') {
           config.model = value.model;
+        }
+        if (EFFORTS.includes(value.effort)) {
+          config.effort = value.effort;
         }
         return config;
       }
@@ -2615,6 +2639,7 @@
         items.push(
           `alerts: ${config.severities?.replaceAll(',', ', ') ?? 'default'}`,
           `model: ${config.model ?? 'default'}`,
+          `effort: ${config.effort ?? 'default'}`,
         );
         return items;
       }
@@ -2724,6 +2749,7 @@
         const model = form.elements.namedItem('model');
         model.value = config.model ?? '';
         model.removeAttribute('aria-invalid');
+        form.elements.namedItem('effort').value = config.effort ?? '';
         target.dirty = false;
       }
 
@@ -2751,6 +2777,10 @@
         }
         if (model !== '') {
           body.model = model;
+        }
+        const effort = form.elements.namedItem('effort').value;
+        if (EFFORTS.includes(effort)) {
+          body.effort = effort;
         }
         return body;
       }

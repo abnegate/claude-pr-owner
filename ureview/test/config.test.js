@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ValidationError } from '../src/ValidationError.js';
 import {
+  EFFORTS,
   FLAGS,
   MODEL,
   SEVERITIES,
@@ -23,6 +24,10 @@ describe('config constants', () => {
 
   it('lists the severities in canonical order', () => {
     assert.deepEqual(SEVERITIES, ['critical', 'high', 'medium', 'low']);
+  });
+
+  it('lists the effort levels Claude Code accepts, lowest first', () => {
+    assert.deepEqual(EFFORTS, ['low', 'medium', 'high', 'xhigh', 'max']);
   });
 
   it('matches model ids that start with an alphanumeric', () => {
@@ -65,6 +70,7 @@ describe('validate', () => {
         bots: true,
         severities: 'critical,high',
         model: 'claude-opus-5-5',
+        effort: 'xhigh',
       }),
       {
         review: true,
@@ -74,6 +80,7 @@ describe('validate', () => {
         bots: true,
         severities: 'critical,high',
         model: 'claude-opus-5-5',
+        effort: 'xhigh',
       },
     );
   });
@@ -115,6 +122,16 @@ describe('validate', () => {
 
   it('omits an empty model', () => {
     assert.deepEqual(validate({ review: true, model: '' }), { review: true });
+  });
+
+  for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+    it(`accepts the effort ${effort}`, () => {
+      assert.deepEqual(validate({ effort }), { effort });
+    });
+  }
+
+  it('omits an empty effort, which means the default', () => {
+    assert.deepEqual(validate({ review: true, effort: '' }), { review: true });
   });
 
   for (const body of [null, undefined, 'review', 5, true, [], [{}]]) {
@@ -169,19 +186,44 @@ describe('validate', () => {
       assert.throws(() => validate({ model }), ValidationError);
     });
   }
+
+  for (const effort of [
+    'High',
+    ' high',
+    'high ',
+    'minimal',
+    'ultracode',
+    'low,high',
+    ['high'],
+    3,
+    true,
+    null,
+    {},
+  ]) {
+    it(`rejects the effort ${JSON.stringify(effort)}`, () => {
+      assert.throws(
+        () => validate({ effort }),
+        (error) =>
+          error instanceof ValidationError &&
+          error.message ===
+            'effort must be one of low, medium, high, xhigh, max.',
+      );
+    });
+  }
 });
 
 describe('parse', () => {
   it('parses a valid config', () => {
     assert.deepEqual(
       parse(
-        '{"review":true,"bots":false,"severities":"critical,high","model":"claude-opus-5-5"}',
+        '{"review":true,"bots":false,"severities":"critical,high","model":"claude-opus-5-5","effort":"max"}',
       ),
       {
         review: true,
         bots: false,
         severities: 'critical,high',
         model: 'claude-opus-5-5',
+        effort: 'max',
       },
     );
   });
@@ -201,6 +243,7 @@ describe('parse', () => {
           bots: null,
           severities: 'urgent',
           model: 'claude opus',
+          effort: 'extreme',
           extra: 'ignored',
         }),
       ),
@@ -208,9 +251,11 @@ describe('parse', () => {
     );
   });
 
-  it('drops an empty model and non-string severities', () => {
+  it('drops an empty model, an empty effort and non-string severities', () => {
     assert.deepEqual(
-      parse('{"model":"","severities":["critical"],"review":false}'),
+      parse(
+        '{"model":"","effort":"","severities":["critical"],"review":false}',
+      ),
       {
         review: false,
       },
@@ -244,15 +289,25 @@ describe('parse', () => {
       bots: false,
       severities: 'critical,low',
       model: 'claude-sonnet-4.6',
+      effort: 'medium',
     };
     assert.deepEqual(parse(serialize(config)), config);
   });
+
+  for (const effort of [3, true, null, ['high'], 'HIGH']) {
+    it(`drops the effort ${JSON.stringify(effort)}`, () => {
+      assert.deepEqual(parse(JSON.stringify({ review: true, effort })), {
+        review: true,
+      });
+    });
+  }
 });
 
 describe('serialize', () => {
-  it('orders keys as flags, then severities, then model', () => {
+  it('orders keys as flags, then severities, then model, then effort', () => {
     assert.equal(
       serialize({
+        effort: 'low',
         model: 'claude-opus-5-5',
         severities: 'critical',
         bots: false,
@@ -261,14 +316,14 @@ describe('serialize', () => {
         comments: false,
         review: true,
       }),
-      '{"review":true,"comments":false,"improvement":true,"healing":true,"bots":false,"severities":"critical","model":"claude-opus-5-5"}',
+      '{"review":true,"comments":false,"improvement":true,"healing":true,"bots":false,"severities":"critical","model":"claude-opus-5-5","effort":"low"}',
     );
   });
 
   it('omits absent keys', () => {
     assert.equal(
-      serialize({ model: 'claude-opus-5-5', review: true }),
-      '{"review":true,"model":"claude-opus-5-5"}',
+      serialize({ effort: 'high', model: 'claude-opus-5-5', review: true }),
+      '{"review":true,"model":"claude-opus-5-5","effort":"high"}',
     );
   });
 
