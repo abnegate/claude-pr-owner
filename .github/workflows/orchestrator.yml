@@ -54,6 +54,12 @@ on:
           that asks for haiku, sonnet, or opus still runs on this model.
         type: string
         default: claude-opus-5-5
+      effort:
+        description: >
+          Effort level for the Claude session and every agent it spawns: low,
+          medium, high, xhigh, or max. Higher levels think longer and cost more.
+        type: string
+        default: high
       severities:
         description: >
           Comma-separated alert levels to address: critical, high, medium, low.
@@ -65,7 +71,7 @@ on:
       owner:
         description: >-
           GitHub login whose ureview enrolment (UREVIEW_<LOGIN> variable) sets the
-          task flags, severities, and model. Empty keeps the inputs as given.
+          task flags, severities, model, and effort. Empty keeps the inputs as given.
           Callers pass needs.owner.outputs.login from owner.yml.
         type: string
         default: ''
@@ -112,6 +118,7 @@ jobs:
       owner: ${{ steps.plan.outputs.owner }}
       key: ${{ steps.plan.outputs.key }}
       model: ${{ steps.plan.outputs.model }}
+      effort: ${{ steps.plan.outputs.effort }}
       fallback_arguments: ${{ steps.plan.outputs.fallback_arguments }}
     steps:
       - name: Require an auth secret
@@ -162,6 +169,7 @@ jobs:
           TRUSTED_ASSOCS: ${{ inputs.trusted_associations }}
           OWNER: ${{ inputs.owner }}
           MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
           VARS_JSON: ${{ inputs.owner != '' && toJSON(vars) || '{}' }}
           HAS_OAUTH: ${{ secrets.oauth_token != '' }}
           HAS_API_KEY: ${{ secrets.api_key != '' }}
@@ -181,6 +189,7 @@ jobs:
           model="${MODEL:-}"
           fallback_model=claude-sonnet-4-6
           fallback_arguments=''
+          effort=''
 
           is_trusted() {
             IFS=',' read -ra allowed <<<"$TRUSTED_ASSOCS"
@@ -260,6 +269,17 @@ jobs:
             printf '%s\n' "$joined"
           }
 
+          apply_effort() {
+            local label="$1" value="$2"
+            case "$value" in
+              low|medium|high|xhigh|max) effort="$value" ;;
+              *)
+                echo "::error::$label '${value//$'\n'/ }' is not an effort level. Use low, medium, high, xhigh, or max."
+                exit 1
+                ;;
+            esac
+          }
+
           clear_plan() {
             tasks='[]'
             review=false
@@ -317,6 +337,10 @@ jobs:
               fi
               model="$value"
             fi
+            value=$(jq -r '.effort | if . == null then empty elif type == "string" then . else tojson end' <<<"$settings")
+            if [[ -n "$value" ]]; then
+              apply_effort "UREVIEW_$key effort" "$value"
+            fi
             if [[ "$tasks" == "[]" && "$review" != "true" ]]; then
               echo "@$owner has no ureview task enabled for this event; skipping."
               clear_plan
@@ -347,6 +371,7 @@ jobs:
           fi
 
           severities=$(normalize_severities "$SEVERITIES")
+          apply_effort effort "${EFFORT:-high}"
 
           case "$EVENT_NAME" in
             pull_request)
@@ -446,11 +471,12 @@ jobs:
             echo "owner=$owner"
             echo "key=$key"
             echo "model=$model"
+            echo "effort=$effort"
             echo "fallback_arguments=$fallback_arguments"
           } >> "$GITHUB_OUTPUT"
           summary="Planned: tasks=$tasks review=$review severities=$severities branch=$branch pr=$pr_number"
           if [[ -n "$owner" ]]; then
-            summary+=" owner=$owner model=$model"
+            summary+=" owner=$owner model=$model effort=$effort"
           fi
           echo "$summary"
 
@@ -671,9 +697,10 @@ jobs:
           use_commit_signing: 'false'
           use_sticky_comment: 'false'
           show_full_output: 'true'
-          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1"}}}}', needs.plan.outputs.model) }}
+          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1","CLAUDE_CODE_EFFORT_LEVEL":"{1}"}}}}', needs.plan.outputs.model, needs.plan.outputs.effort) }}
           claude_args: |
             --model ${{ needs.plan.outputs.model }}
+            --effort ${{ needs.plan.outputs.effort }}
             ${{ needs.plan.outputs.fallback_arguments }}
             --dangerously-skip-permissions
           prompt: ${{ steps.prompt.outputs.prompt }}
@@ -790,12 +817,13 @@ jobs:
           use_sticky_comment: 'false'
           include_fix_links: 'false'
           show_full_output: 'true'
-          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1"}}}}', needs.plan.outputs.model) }}
+          settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1","CLAUDE_CODE_EFFORT_LEVEL":"{1}"}}}}', needs.plan.outputs.model, needs.plan.outputs.effort) }}
           # Naming the tool is what installs the inline-comment MCP server.
           # It can leave a diff comment. It cannot approve or request changes.
           # dangerously-skip-permissions is intentionally absent.
           claude_args: |
             --model ${{ needs.plan.outputs.model }}
+            --effort ${{ needs.plan.outputs.effort }}
             ${{ needs.plan.outputs.fallback_arguments }}
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git log *),Bash(git diff *)"
           prompt: ${{ steps.prompt.outputs.prompt }}

@@ -52,6 +52,7 @@ jobs:
     # with:
     #   review: false
     #   model: claude-opus-5-5
+    #   effort: high
     #   severities: critical,high
     #   improvement: true
     #   healing: true
@@ -79,13 +80,14 @@ To have each PR author pay with their own Claude subscription instead of one sha
 | `improvement` | boolean | `true` | Run on `pull_request` events. Reviews and fixes. |
 | `review` | boolean | `false` | Run on `pull_request` events. Posts inline comments and does nothing else with them. |
 | `model` | string | `claude-opus-5-5` | Model for the session and every agent it spawns. Falls back to `claude-sonnet-4-6` when unavailable, unless it is `claude-sonnet-4-6`. |
+| `effort` | string | `high` | Effort level for the session and every agent it spawns: `low`, `medium`, `high`, `xhigh`, `max`. Empty means `high`. Any other value fails the plan job. Callers that set no `effort` run at `high`, where they previously ran at Claude Code's default for the model. |
 | `severities` | string | `critical,high` | Alert levels to address: `critical`, `high`, `medium`, `low`. |
 | `healing` | boolean | `true` | Run on `workflow_run` CI failures |
 | `bots` | boolean | `true` | Run on `pull_request_review` events from known bot reviewers |
 | `comments` | boolean | `true` | Run on `@claude` mentions from trusted collaborators |
 | `bot_allowlist` | string | CodeRabbit, Greptile, Codex, Copilot variants | Comma-separated. `*` and `?` are wildcards. Brackets are literal. |
 | `trusted_associations` | string | `OWNER,MEMBER,COLLABORATOR` | Who can invoke `@claude` and whose PR bodies are safe to feed into prompts |
-| `owner` | string | `''` | GitHub login whose `UREVIEW_<LOGIN>` variable sets the task flags, severities, and model. Pass `needs.owner.outputs.login`. Empty keeps the inputs as given. See [Per-user mode](#per-user-mode). |
+| `owner` | string | `''` | GitHub login whose `UREVIEW_<LOGIN>` variable sets the task flags, severities, model, and effort. Pass `needs.owner.outputs.login`. Empty keeps the inputs as given. See [Per-user mode](#per-user-mode). |
 
 ## Per-user mode
 
@@ -116,12 +118,13 @@ Enrolment is keyed by login, so a GitHub rename orphans it: the old `UREVIEW_*_<
 | `improvement`, `review`, `healing`, `bots`, `comments` | boolean (or `"true"` / `"false"`) | Same as the input of that name |
 | `severities` | string | Same as the `severities` input |
 | `model` | string | Same as the `model` input |
+| `effort` | string | Same as the `effort` input. Absent, `null`, or `""` keeps the input. |
 
 ```json
-{"review":true,"comments":true,"improvement":false,"severities":"critical,high","model":"claude-opus-5-5"}
+{"review":true,"comments":true,"improvement":false,"severities":"critical,high","model":"claude-opus-5-5","effort":"high"}
 ```
 
-`{}` enrols with the inputs unchanged. Invalid JSON, a non-object, or an invalid model fails the plan job.
+`{}` enrols with the inputs unchanged. Invalid JSON, a non-object, an invalid model, or an invalid effort fails the plan job.
 
 ### Owner
 
@@ -190,7 +193,7 @@ Self-serve at https://ureview.fra.appwrite.run:
 
 1. Sign in with GitHub.
 2. Pick a repository you can push to, or an organization you administer. [Install ureview](https://github.com/apps/ureview-code-reviewer/installations/new) there first if it is not listed.
-3. Set the flags, severities, and model.
+3. Set the flags, severities, model, and effort.
 4. Run `claude setup-token` in a terminal, paste the token, and save.
 
 ureview writes only your own `UREVIEW_*_<LOGIN>` names.

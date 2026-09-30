@@ -148,6 +148,7 @@ run_plan() {
     SEVERITIES="${SEVERITIES-critical,high}" \
     OWNER="${OWNER:-}" \
     MODEL="${MODEL:-claude-opus-5-5}" \
+    EFFORT="${EFFORT-high}" \
     VARS_JSON="${VARS_JSON-$empty_object}" \
     HAS_OAUTH="${HAS_OAUTH:-true}" \
     HAS_API_KEY="${HAS_API_KEY:-false}" \
@@ -295,6 +296,7 @@ reset_event() {
   OWNER=
   KEY=
   MODEL=claude-opus-5-5
+  EFFORT=high
   VARS_JSON='{}'
   HAS_OAUTH=true
   HAS_API_KEY=false
@@ -314,6 +316,7 @@ expect_output severities 'critical, high'
 expect_output owner ''
 expect_output key ''
 expect_output model claude-opus-5-5
+expect_output effort high
 expect_output fallback_arguments '--fallback-model claude-sonnet-4-6'
 
 reset_event
@@ -448,13 +451,48 @@ expect_output model claude-sonnet-4-6
 expect_output owner ''
 expect_output fallback_arguments ''
 
+for level in low medium high xhigh max; do
+  reset_event
+  EFFORT="$level"
+  run_plan || fail "effort '$level' should have been accepted"
+  expect_output effort "$level"
+done
+
 reset_event
-VARS_JSON=$(vars_for UREVIEW_ABNEGATE '{"improvement":false,"review":true,"model":"claude-sonnet-4-6","severities":"low"}')
+unset EFFORT
+run_plan
+expect_output effort high
+
+reset_event
+EFFORT=
+run_plan
+expect_output effort high
+
+for bad in bogus High ' high' 'high ' minimal 'low,high' 3; do
+  reset_event
+  EFFORT="$bad"
+  if run_plan; then
+    fail "effort '$bad' should have failed"
+  fi
+  expect_line /tmp/cpo-plan.out "::error::effort '$bad' is not an effort level. Use low, medium, high, xhigh, or max."
+done
+
+reset_event
+EFFORT=$'high\n::error::injected'
+if run_plan; then
+  fail 'an effort with a newline should have failed'
+fi
+expect_line /tmp/cpo-plan.out "::error::effort 'high ::error::injected' is not an effort level. Use low, medium, high, xhigh, or max."
+expect_no_line_starting /tmp/cpo-plan.out '::error::injected'
+
+reset_event
+VARS_JSON=$(vars_for UREVIEW_ABNEGATE '{"improvement":false,"review":true,"model":"claude-sonnet-4-6","severities":"low","effort":"low"}')
 run_plan
 expect_output tasks '["improvement"]'
 expect_output review false
 expect_output severities 'critical, high'
 expect_output model claude-opus-5-5
+expect_output effort high
 expect_output owner ''
 
 reset_event
@@ -476,6 +514,7 @@ expect_output base_ref ''
 expect_output owner abnegate
 expect_output key ABNEGATE
 expect_output model claude-opus-5-5
+expect_output effort high
 expect_output fallback_arguments '--fallback-model claude-sonnet-4-6'
 expect_stdout /tmp/cpo-plan.out '@abnegate is not enrolled in ureview (no UREVIEW_ABNEGATE variable); skipping.'
 
@@ -498,7 +537,7 @@ expect_output pr_number 42
 expect_output head_sha abc123
 expect_output base_ref main
 expect_output owner abnegate
-expect_stdout /tmp/cpo-plan.out 'owner=abnegate model=claude-opus-5-5'
+expect_stdout /tmp/cpo-plan.out 'owner=abnegate model=claude-opus-5-5 effort=high'
 
 reset_event
 OWNER=some-user
@@ -518,7 +557,33 @@ expect_output tasks '["improvement"]'
 expect_output severities 'critical, low'
 expect_output model claude-sonnet-4-6
 expect_output fallback_arguments ''
-expect_stdout /tmp/cpo-plan.out 'owner=abnegate model=claude-sonnet-4-6'
+expect_stdout /tmp/cpo-plan.out 'owner=abnegate model=claude-sonnet-4-6 effort=high'
+
+for level in low medium high xhigh max; do
+  reset_event
+  OWNER=abnegate
+  EFFORT=medium
+  VARS_JSON=$(vars_for UREVIEW_ABNEGATE "$(jq -nc --arg effort "$level" '{improvement: true, effort: $effort}')")
+  run_plan || fail "owner effort '$level' should have been accepted"
+  expect_output effort "$level"
+  expect_stdout /tmp/cpo-plan.out "owner=abnegate model=claude-opus-5-5 effort=$level"
+done
+
+for settings in '{"improvement":true}' '{"improvement":true,"effort":""}' '{"improvement":true,"effort":null}'; do
+  reset_event
+  OWNER=abnegate
+  EFFORT=xhigh
+  VARS_JSON=$(vars_for UREVIEW_ABNEGATE "$settings")
+  run_plan || fail "owner settings $settings should keep the effort input"
+  expect_output effort xhigh
+done
+
+reset_event
+OWNER=abnegate
+EFFORT=low
+run_plan
+expect_output tasks '[]'
+expect_output effort low
 
 for model in 'claude-opus-4-6[1m]' 'claude-sonnet-4-6[1m]' 'claude-3.5_x[beta2]'; do
   reset_event
@@ -616,6 +681,26 @@ if run_plan; then
   fail 'a model with a newline should have failed'
 fi
 expect_line /tmp/cpo-plan.out "::error::UREVIEW_ABNEGATE model 'claude ::error::injected' is not a valid model id."
+expect_no_line_starting /tmp/cpo-plan.out '::error::injected'
+
+for bad in '"bogus"' '"HIGH"' '"high "' '3' 'true' '["high"]' '{"level":"high"}'; do
+  reset_event
+  OWNER=abnegate
+  VARS_JSON=$(vars_for UREVIEW_ABNEGATE "{\"improvement\":true,\"effort\":$bad}")
+  if run_plan; then
+    fail "owner effort $bad should have failed"
+  fi
+  shown=$(jq -r 'if type == "string" then . else tojson end' <<<"$bad")
+  expect_line /tmp/cpo-plan.out "::error::UREVIEW_ABNEGATE effort '$shown' is not an effort level. Use low, medium, high, xhigh, or max."
+done
+
+reset_event
+OWNER=abnegate
+VARS_JSON=$(vars_for UREVIEW_ABNEGATE "$(jq -nc '{improvement: true, effort: "high\n::error::injected"}')")
+if run_plan; then
+  fail 'an owner effort with a newline should have failed'
+fi
+expect_line /tmp/cpo-plan.out "::error::UREVIEW_ABNEGATE effort 'high ::error::injected' is not an effort level. Use low, medium, high, xhigh, or max."
 expect_no_line_starting /tmp/cpo-plan.out '::error::injected'
 
 reset_event
@@ -1059,7 +1144,7 @@ done
 
 compared_fields() {
   awk -F= '
-    BEGIN { split("tasks review branch pr_number head_sha base_ref review_id reviewer failed_run_id severities", names, " "); for (i in names) wanted[names[i]] = 1 }
+    BEGIN { split("tasks review branch pr_number head_sha base_ref review_id reviewer failed_run_id severities effort", names, " "); for (i in names) wanted[names[i]] = 1 }
     $1 in wanted { print }
   ' <<<"$PLAN_OUT"
 }
@@ -1149,7 +1234,7 @@ for event in pull_request pull_request_review pull_request_review_comment issue_
     run_plan || fail "per-user plan failed on $event with mask $mask"
     per_user=$(compared_fields)
 
-    [[ "$(wc -l <<<"$legacy")" -eq 10 ]] || fail "legacy plan on $event with mask $mask is missing compared outputs: $legacy"
+    [[ "$(wc -l <<<"$legacy")" -eq 11 ]] || fail "legacy plan on $event with mask $mask is missing compared outputs: $legacy"
     [[ "$legacy" == "$per_user" ]] \
       || fail "$event with improvement=$improvement healing=$healing bots=$bots comments=$comments review=$review: legacy and per-user plans differ"$'\n'"legacy:"$'\n'"$legacy"$'\n'"per-user:"$'\n'"$per_user"
     if ! grep -qxF -e 'tasks=[]' <<<"$legacy" || grep -qxF 'review=true' <<<"$legacy"; then
@@ -1227,6 +1312,9 @@ owner_input = inputs.get("owner") or {}
 check(owner_input.get("type") == "string", "orchestrator owner input is not type: string")
 check(owner_input.get("default") == "", "orchestrator owner input does not default to ''")
 check("per_user" not in inputs, "orchestrator still declares a per_user input")
+effort_input = inputs.get("effort") or {}
+check(effort_input.get("type") == "string", "orchestrator effort input is not type: string")
+check(effort_input.get("default") == "high", "orchestrator effort input does not default to high")
 names = list(inputs)
 if "owner" in names and "severities" in names:
     check(names.index("owner") == names.index("severities") + 1, "orchestrator owner input does not follow severities")
@@ -1249,12 +1337,13 @@ plan_env = plan_step.get("env") or {}
 for key, want in {
     "OWNER": "${{ inputs.owner }}",
     "MODEL": "${{ inputs.model }}",
+    "EFFORT": "${{ inputs.effort }}",
     "VARS_JSON": "${{ inputs.owner != '' && toJSON(vars) || '{}' }}",
     "HAS_OAUTH": "${{ secrets.oauth_token != '' }}",
     "HAS_API_KEY": "${{ secrets.api_key != '' }}",
 }.items():
     check(plan_env.get(key) == want, f"Decide tasks env {key} is {plan_env.get(key)!r}, want {want!r}")
-for key in ("owner", "key", "model", "fallback_arguments"):
+for key in ("owner", "key", "model", "effort", "fallback_arguments"):
     got = (plan_job.get("outputs") or {}).get(key)
     check(got == f"${{{{ steps.plan.outputs.{key} }}}}", f"plan job output {key} is {got!r}")
 
@@ -1298,6 +1387,10 @@ count() {
 
 [[ "$(count 'inputs.model' .github/workflows/orchestrator.yml)" == 1 ]] || fail 'inputs.model is read somewhere other than the plan env'
 [[ "$(count '--model ${{ needs.plan.outputs.model }}' .github/workflows/orchestrator.yml)" == 2 ]] || fail 'run and review do not pass the planned model to Claude'
+[[ "$(count 'inputs.effort' .github/workflows/orchestrator.yml)" == 1 ]] || fail 'inputs.effort is read somewhere other than the plan env'
+[[ "$(count '--effort ${{ needs.plan.outputs.effort }}' .github/workflows/orchestrator.yml)" == 2 ]] || fail 'run and review do not pass the planned effort to Claude'
+[[ "$(grep -c '"CLAUDE_CODE_EFFORT_LEVEL":"{1}"}}}}'"'"', needs\.plan\.outputs\.model, needs\.plan\.outputs\.effort)' .github/workflows/orchestrator.yml || true)" == 2 ]] \
+  || fail 'run and review settings do not hold agents at the planned effort'
 [[ "$(count '${{ needs.plan.outputs.fallback_arguments }}' .github/workflows/orchestrator.yml)" == 2 ]] || fail 'run and review do not pass the planned fallback to Claude'
 [[ "$(count '--fallback-model' .github/workflows/orchestrator.yml)" == 1 ]] || fail '--fallback-model is hard-coded outside the plan step'
 [[ "$(count 'toJSON(vars)' .github/workflows/orchestrator.yml)" == 1 ]] || fail 'orchestrator reads toJSON(vars) outside the owner-gated plan env'
