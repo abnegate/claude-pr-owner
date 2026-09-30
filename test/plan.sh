@@ -215,6 +215,18 @@ for bad in '' ',,' 'critical,nit'; do
   fi
 done
 
+reset_event
+EVENT_NAME=pull_request_review_comment
+PR_HEAD_REF=feature/review-mode
+PR_HEAD_SHA=abc123
+PR_NUMBER=42
+COMMENT_ASSOC=OWNER
+COMMENT_BODY='@claude please fix this'
+run_plan
+expect_output tasks '["comments"]'
+expect_output branch feature/review-mode
+expect_output pr_number 42
+
 prompt_body() {
   local file="$1"
   local delim body

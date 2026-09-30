@@ -274,15 +274,16 @@ jobs:
             issue_comment|pull_request_review_comment)
               if [[ "$COMMENTS_ENABLED" == "true" ]] && is_trusted "$COMMENT_ASSOC" && \
                  [[ "$COMMENT_BODY" == *"@claude"* ]]; then
+                pr_number="$ISSUE_NUMBER"
                 if [[ -n "$PR_HEAD_REF" ]]; then
                   branch="$PR_HEAD_REF"
                   head_sha="$PR_HEAD_SHA"
+                  pr_number="$PR_NUMBER"
                 elif [[ -n "$ISSUE_PR_URL" ]]; then
                   branch=$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json headRefName --jq .headRefName)
                   head_sha=$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
                 fi
                 tasks='["comments"]'
-                pr_number="$ISSUE_NUMBER"
               fi
               ;;
             issues)
