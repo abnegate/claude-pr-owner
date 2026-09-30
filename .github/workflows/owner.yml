@@ -42,6 +42,7 @@ jobs:
           WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           WR_EVENT: ${{ github.event.workflow_run.event }}
           WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           WR_HEAD_REPO_FULL: ${{ github.event.workflow_run.head_repository.full_name }}
           VARS_JSON: ${{ toJSON(vars) }}
         run: |
@@ -79,9 +80,15 @@ jobs:
               if [[ "${WR_CONCLUSION:-}" == "failure" \
                 && "${WR_EVENT:-}" == "pull_request" \
                 && "${WR_HEAD_REPO_FULL:-}" == "$repository" ]]; then
-                if ! owner=$(gh pr list --repo "$repository" --head "${WR_HEAD_BRANCH:-}" --state open --json number,author --jq '.[0].author.login // empty'); then
+                if ! authors=$(gh pr list --repo "$repository" --head "${WR_HEAD_BRANCH:-}" --state open --json author,headRefOid,isCrossRepository \
+                  | jq -r --arg sha "${WR_HEAD_SHA:-}" '[.[] | select(.headRefOid == $sha and .isCrossRepository == false) | .author.login] | unique | join(" ")'); then
                   echo "::warning::gh pr list failed, so the pull request for this workflow_run is unknown."
-                  owner=''
+                  authors=''
+                fi
+                if [[ "$authors" == *" "* ]]; then
+                  echo "::warning::Open pull requests at ${WR_HEAD_SHA:-} have different authors ($authors), so the ureview owner is ambiguous."
+                else
+                  owner="$authors"
                 fi
               fi
               ;;

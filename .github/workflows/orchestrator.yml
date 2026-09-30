@@ -149,6 +149,7 @@ jobs:
           WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           WR_EVENT: ${{ github.event.workflow_run.event }}
           WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           WR_HEAD_REPO_FULL: ${{ github.event.workflow_run.head_repository.full_name }}
           WR_ID: ${{ github.event.workflow_run.id }}
           IMPROVEMENT_ENABLED: ${{ inputs.improvement }}
@@ -406,17 +407,17 @@ jobs:
                     "$WR_CONCLUSION" == "failure" && \
                     "$WR_EVENT" == "pull_request" && \
                     "$WR_HEAD_REPO_FULL" == "$REPO" ]]; then
-                pr_number=$(gh pr list --repo "$REPO" --head "$WR_HEAD_BRANCH" --state open --json number --jq '.[0].number')
+                pr_number=$(gh pr list --repo "$REPO" --head "$WR_HEAD_BRANCH" --state open --json number,headRefOid,isCrossRepository \
+                  | jq -r --arg sha "$WR_HEAD_SHA" 'first(.[] | select(.headRefOid == $sha and .isCrossRepository == false) | .number) // empty')
                 if [[ -n "$pr_number" ]]; then
-                  candidate_sha=$(gh pr view "$pr_number" --repo "$REPO" --json headRefOid --jq .headRefOid)
-                  if is_bot_commit "$candidate_sha"; then
-                    echo "HEAD commit $candidate_sha authored by claude[bot]; skipping healing to avoid self-trigger loop."
+                  if is_bot_commit "$WR_HEAD_SHA"; then
+                    echo "HEAD commit $WR_HEAD_SHA authored by claude[bot]; skipping healing to avoid self-trigger loop."
                     pr_number=''
                   else
                     tasks='["healing"]'
                     branch="$WR_HEAD_BRANCH"
                     failed_run_id="$WR_ID"
-                    head_sha="$candidate_sha"
+                    head_sha="$WR_HEAD_SHA"
                   fi
                 fi
               fi

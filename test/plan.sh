@@ -45,16 +45,28 @@ if [[ "$joined" == *"/commits/"* ]]; then
   fi
   exit 0
 fi
-if [[ "$1" == "pr" && "$2" == "list" && "$joined" == *"--json number,author"* ]]; then
+if [[ "$1" == "pr" && "$2" == "list" ]]; then
   if [[ "${MOCK_GH_FAIL:-0}" == "1" ]]; then
     echo "gh: simulated failure" >&2
     exit 1
   fi
-  printf '%s\n' "${MOCK_AUTHOR-abnegate}"
-  exit 0
-fi
-if [[ "$1" == "pr" && "$2" == "list" ]]; then
-  printf '%s\n' '88'
+  filter=.
+  while (($#)); do
+    if [[ "$1" == "--jq" ]]; then
+      filter="$2"
+    fi
+    shift
+  done
+  if [[ -n "${MOCK_PRS:-}" ]]; then
+    pulls="$MOCK_PRS"
+  else
+    pulls=$(jq -nc --arg author "${MOCK_AUTHOR-abnegate}" '
+      [
+        {number: 86, author: {login: "fork-user"}, headRefOid: "dddddddddddddddddddddddddddddddddddddddd", isCrossRepository: true},
+        {number: 87, author: {login: "other-user"}, headRefOid: "cccccccccccccccccccccccccccccccccccccccc", isCrossRepository: false}
+      ] + if $author == "" then [] else [{number: 88, author: {login: $author}, headRefOid: "dddddddddddddddddddddddddddddddddddddddd", isCrossRepository: false}] end')
+  fi
+  jq -r "$filter" <<<"$pulls"
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
@@ -89,6 +101,9 @@ chmod +x "$mock/git"
 
 mock_log="$mock/calls.log"
 empty_object='{}'
+run_sha=dddddddddddddddddddddddddddddddddddddddd
+other_sha=cccccccccccccccccccccccccccccccccccccccc
+unknown_sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 
 fail() {
   echo "FAIL: $*" >&2
@@ -121,6 +136,7 @@ run_plan() {
     WR_EVENT="${WR_EVENT:-}" \
     WR_HEAD_BRANCH="${WR_HEAD_BRANCH:-}" \
     WR_HEAD_REPO_FULL="${WR_HEAD_REPO_FULL:-}" \
+    WR_HEAD_SHA="${WR_HEAD_SHA:-}" \
     WR_ID="${WR_ID:-}" \
     IMPROVEMENT_ENABLED="${IMPROVEMENT_ENABLED:-true}" \
     HEALING_ENABLED="${HEALING_ENABLED:-true}" \
@@ -136,6 +152,9 @@ run_plan() {
     HAS_OAUTH="${HAS_OAUTH:-true}" \
     HAS_API_KEY="${HAS_API_KEY:-false}" \
     MOCK_BOT="${MOCK_BOT:-0}" \
+    MOCK_AUTHOR="${MOCK_AUTHOR-abnegate}" \
+    MOCK_PRS="${MOCK_PRS:-}" \
+    MOCK_GH_FAIL="${MOCK_GH_FAIL:-0}" \
     MOCK_LOG="$mock_log" \
     bash /tmp/cpo-plan.sh > /tmp/cpo-plan.out
   rc=$?
@@ -159,8 +178,10 @@ run_owner() {
     WR_EVENT="${WR_EVENT:-}" \
     WR_HEAD_BRANCH="${WR_HEAD_BRANCH:-}" \
     WR_HEAD_REPO_FULL="${WR_HEAD_REPO_FULL:-}" \
+    WR_HEAD_SHA="${WR_HEAD_SHA:-}" \
     VARS_JSON="${VARS_JSON-$empty_object}" \
     MOCK_AUTHOR="${MOCK_AUTHOR-abnegate}" \
+    MOCK_PRS="${MOCK_PRS:-}" \
     MOCK_GH_FAIL="${MOCK_GH_FAIL:-0}" \
     MOCK_LOG="$mock_log" \
     bash -e /tmp/cpo-owner.sh > /tmp/cpo-owner.out 2> /tmp/cpo-owner.err
@@ -263,6 +284,7 @@ reset_event() {
   WR_EVENT=
   WR_HEAD_BRANCH=
   WR_HEAD_REPO_FULL=
+  WR_HEAD_SHA=
   WR_ID=
   IMPROVEMENT_ENABLED=true
   HEALING_ENABLED=true
@@ -279,6 +301,7 @@ reset_event() {
   HAS_PUSH_TOKEN=false
   MOCK_BOT=0
   MOCK_AUTHOR=abnegate
+  MOCK_PRS=
   MOCK_GH_FAIL=0
   : > "$mock_log"
 }
@@ -357,11 +380,48 @@ WR_CONCLUSION=failure
 WR_EVENT=pull_request
 WR_HEAD_REPO_FULL=acme/app
 WR_HEAD_BRANCH=feature/review-mode
+WR_HEAD_SHA="$run_sha"
 WR_ID=77
 run_plan
 expect_output tasks '["healing"]'
 expect_output review false
 expect_output pr_number 88
+expect_output head_sha "$run_sha"
+expect_output branch feature/review-mode
+expect_stdout "$mock_log" '--json number,headRefOid,isCrossRepository'
+
+reset_event
+EVENT_NAME=workflow_run
+WR_CONCLUSION=failure
+WR_EVENT=pull_request
+WR_HEAD_REPO_FULL=acme/app
+WR_HEAD_BRANCH=feature/review-mode
+WR_HEAD_SHA="$other_sha"
+WR_ID=77
+run_plan
+expect_output tasks '["healing"]'
+expect_output pr_number 87
+expect_output head_sha "$other_sha"
+
+for variant in unknown fork; do
+  reset_event
+  EVENT_NAME=workflow_run
+  WR_CONCLUSION=failure
+  WR_EVENT=pull_request
+  WR_HEAD_REPO_FULL=acme/app
+  WR_HEAD_BRANCH=feature/review-mode
+  WR_HEAD_SHA="$run_sha"
+  WR_ID=77
+  case "$variant" in
+    unknown) WR_HEAD_SHA="$unknown_sha" ;;
+    fork) MOCK_AUTHOR= ;;
+  esac
+  run_plan || fail "plan failed when no same-repository pull request is at the run's head ($variant)"
+  expect_output tasks '[]'
+  expect_output pr_number ''
+  expect_output head_sha ''
+  expect_output failed_run_id ''
+done
 
 reset_event
 SEVERITIES='high, CRITICAL'
@@ -696,11 +756,13 @@ for healing in true false; do
   WR_EVENT=pull_request
   WR_HEAD_REPO_FULL=acme/app
   WR_HEAD_BRANCH=feature/review-mode
+  WR_HEAD_SHA="$run_sha"
   WR_ID=77
   run_plan
   if [[ "$healing" == "true" ]]; then
     expect_output tasks '["healing"]'
     expect_output pr_number 88
+    expect_output head_sha "$run_sha"
     expect_output failed_run_id 77
   else
     expect_output tasks '[]'
@@ -839,6 +901,7 @@ WR_CONCLUSION=failure
 WR_EVENT=pull_request
 WR_HEAD_REPO_FULL=acme/app
 WR_HEAD_BRANCH=feature/review-mode
+WR_HEAD_SHA="$run_sha"
 MOCK_AUTHOR=some-user
 VARS_JSON=$(vars_for UREVIEW_SOME_USER '{}')
 run_owner
@@ -849,7 +912,67 @@ expect_stdout "$mock_log" 'pr list'
 expect_stdout "$mock_log" '--repo acme/app'
 expect_stdout "$mock_log" '--head feature/review-mode'
 expect_stdout "$mock_log" '--state open'
-expect_stdout "$mock_log" '--json number,author'
+expect_stdout "$mock_log" '--json author,headRefOid,isCrossRepository'
+
+reset_event
+EVENT_NAME=workflow_run
+WR_CONCLUSION=failure
+WR_EVENT=pull_request
+WR_HEAD_REPO_FULL=acme/app
+WR_HEAD_BRANCH=feature/review-mode
+WR_HEAD_SHA="$other_sha"
+VARS_JSON=$(jq -nc '{UREVIEW_ABNEGATE: "{}", UREVIEW_OTHER_USER: "{}", UREVIEW_FORK_USER: "{}"}')
+run_owner
+expect_owner login other-user
+expect_owner enrolled true
+expect_owner oauth_secret UREVIEW_OAUTH_TOKEN_OTHER_USER
+
+reset_event
+EVENT_NAME=workflow_run
+WR_CONCLUSION=failure
+WR_EVENT=pull_request
+WR_HEAD_REPO_FULL=acme/app
+WR_HEAD_BRANCH=feature/review-mode
+WR_HEAD_SHA="$unknown_sha"
+VARS_JSON=$(jq -nc '{UREVIEW_ABNEGATE: "{}", UREVIEW_OTHER_USER: "{}", UREVIEW_FORK_USER: "{}"}')
+run_owner || fail 'owner.yml must not fail when no pull request is at the run head'
+expect_not_enrolled_owner ''
+expect_line /tmp/cpo-owner.out 'Could not resolve a ureview owner for this event; skipping.'
+if grep -q '::warning::' /tmp/cpo-owner.out; then
+  fail "owner.yml warned when no pull request is at the run head: $(cat /tmp/cpo-owner.out)"
+fi
+
+reset_event
+EVENT_NAME=workflow_run
+WR_CONCLUSION=failure
+WR_EVENT=pull_request
+WR_HEAD_REPO_FULL=acme/app
+WR_HEAD_BRANCH=feature/review-mode
+WR_HEAD_SHA="$run_sha"
+MOCK_PRS=$(jq -nc --arg sha "$run_sha" '[
+  {number: 88, author: {login: "abnegate"}, headRefOid: $sha, isCrossRepository: false},
+  {number: 89, author: {login: "abnegate"}, headRefOid: $sha, isCrossRepository: false}
+]')
+VARS_JSON=$(vars_for UREVIEW_ABNEGATE '{}')
+run_owner
+expect_owner login abnegate
+expect_owner enrolled true
+
+reset_event
+EVENT_NAME=workflow_run
+WR_CONCLUSION=failure
+WR_EVENT=pull_request
+WR_HEAD_REPO_FULL=acme/app
+WR_HEAD_BRANCH=feature/review-mode
+WR_HEAD_SHA="$run_sha"
+MOCK_PRS=$(jq -nc --arg sha "$run_sha" '[
+  {number: 88, author: {login: "abnegate"}, headRefOid: $sha, isCrossRepository: false},
+  {number: 89, author: {login: "other-user"}, headRefOid: $sha, isCrossRepository: false}
+]')
+VARS_JSON=$(jq -nc '{UREVIEW_ABNEGATE: "{}", UREVIEW_OTHER_USER: "{}"}')
+run_owner || fail 'owner.yml must not fail when pull requests at the run head disagree on the author'
+expect_not_enrolled_owner ''
+expect_line /tmp/cpo-owner.out "::warning::Open pull requests at $run_sha have different authors (abnegate other-user), so the ureview owner is ambiguous."
 
 for variant in success push fork; do
   reset_event
@@ -858,6 +981,7 @@ for variant in success push fork; do
   WR_EVENT=pull_request
   WR_HEAD_REPO_FULL=acme/app
   WR_HEAD_BRANCH=feature/review-mode
+  WR_HEAD_SHA="$run_sha"
   case "$variant" in
     success) WR_CONCLUSION=success ;;
     push) WR_EVENT=push ;;
@@ -877,15 +1001,16 @@ for variant in failing empty bot; do
   WR_EVENT=pull_request
   WR_HEAD_REPO_FULL=acme/app
   WR_HEAD_BRANCH=feature/review-mode
+  WR_HEAD_SHA="$run_sha"
   case "$variant" in
     failing) MOCK_GH_FAIL=1 ;;
     empty) MOCK_AUTHOR= ;;
     bot) MOCK_AUTHOR='dependabot[bot]' ;;
   esac
-  VARS_JSON=$(jq -nc '{UREVIEW_ABNEGATE: "{}", "UREVIEW_DEPENDABOT[BOT]": "{}"}')
+  VARS_JSON=$(jq -nc '{UREVIEW_ABNEGATE: "{}", UREVIEW_FORK_USER: "{}", "UREVIEW_DEPENDABOT[BOT]": "{}"}')
   run_owner || fail "owner.yml failed when the workflow_run author is $variant"
   expect_not_enrolled_owner ''
-  expect_stdout "$mock_log" '--json number,author'
+  expect_stdout "$mock_log" '--json author,headRefOid,isCrossRepository'
   if [[ "$variant" == "failing" ]]; then
     expect_line /tmp/cpo-owner.out '::warning::gh pr list failed, so the pull request for this workflow_run is unknown.'
   elif grep -q '::warning::' /tmp/cpo-owner.out; then
@@ -983,6 +1108,7 @@ differential_event() {
       WR_EVENT=pull_request
       WR_HEAD_REPO_FULL=acme/app
       WR_HEAD_BRANCH=feature/review-mode
+      WR_HEAD_SHA="$run_sha"
       WR_ID=77
       ;;
   esac

@@ -131,7 +131,7 @@ The owner is always the PR (or issue) author, never the commenter or reviewer. T
 |---|---|
 | `pull_request`, `pull_request_review`, `pull_request_review_comment` | PR author |
 | `issue_comment`, `issues` | Author of the issue or PR |
-| `workflow_run` | Author of the open PR whose head is the run's branch. Only for failed runs triggered by `pull_request` from the same repository. |
+| `workflow_run` | Author of the open same-repository PR whose head commit is the run's head commit. Only for failed runs triggered by `pull_request` from the same repository. None when no PR is at that commit, or when PRs at it have different authors. |
 | Anything else | None. Skipped. |
 
 Logins that are not plain GitHub logins, such as `dependabot[bot]`, never resolve.
