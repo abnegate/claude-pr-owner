@@ -1270,6 +1270,12 @@
         border-color: var(--info-border);
       }
 
+      .chip.unknown {
+        color: var(--warning-text);
+        background: var(--warning-soft);
+        border-color: var(--warning-border);
+      }
+
       .chip.set::before,
       .chip.inherited::before {
         content: '';
@@ -1927,6 +1933,7 @@
         set: { text: 'Set', className: 'chip set' },
         inherited: { text: 'Set in organization', className: 'chip inherited' },
         missing: { text: 'Not set', className: 'chip' },
+        unknown: { text: 'Unknown', className: 'chip unknown' },
       });
 
       const API_KEY_STATES = Object.freeze({
@@ -2280,11 +2287,19 @@
       }
 
       function tokenState(target, key) {
-        if (target.secrets[key]) {
+        const own = target.secrets[key];
+        const inherited = target.inherited?.secrets[key];
+        if (own === true) {
           return 'set';
         }
-        if (target.inherited?.secrets[key]) {
+        if (own === null) {
+          return 'unknown';
+        }
+        if (inherited === true) {
           return 'inherited';
+        }
+        if (inherited === null) {
+          return 'unknown';
         }
         return 'missing';
       }
@@ -2651,8 +2666,8 @@
         view.tokenNote.hidden = !missingToken;
         view.remove.hidden =
           target.config === null &&
-          !target.secrets.oauth &&
-          !target.secrets.push;
+          target.secrets.oauth === false &&
+          target.secrets.push === false;
         renderSubmit(target);
       }
 
@@ -2753,8 +2768,8 @@
         target.view.tokens.reset();
         target.secrets = {
           ...target.secrets,
-          oauth: target.secrets.oauth || tokens.oauth !== undefined,
-          push: target.secrets.push || tokens.push !== undefined,
+          oauth: tokens.oauth !== undefined || target.secrets.oauth,
+          push: tokens.push !== undefined || target.secrets.push,
         };
         renderSummary(target);
       }
@@ -2789,9 +2804,7 @@
         const enrolling = target.config === null;
         const pristine =
           enrolling &&
-          !target.secrets.oauth &&
-          !target.secrets.push &&
-          !target.secrets.apiKey;
+          Object.values(target.secrets).every((value) => value === false);
         const messages = [];
         let saved = false;
         setStatus(view.settingsStatus, '', '');
@@ -2834,29 +2847,53 @@
           applyTokens(target, tokens);
           return;
         }
-        const status = target.view.settingsStatus;
-        const reason = describe(error, target);
+        const keys = Object.keys(tokens);
+        const created = new URLSearchParams(keys.map((key) => [key, 'true']));
+        let undo = null;
         try {
-          const created = new URLSearchParams(
-            Object.keys(tokens).map((key) => [key, 'true']),
-          );
           await request('DELETE', `${target.path}/tokens?${created}`);
-        } catch (undo) {
-          applyTokens(target, tokens);
-          propagate(target);
-          if (!(undo instanceof RequestError)) {
-            throw undo;
+        } catch (caught) {
+          undo = caught;
+        }
+        await reconcile(target, keys, describe(error, target));
+        if (undo !== null && !(undo instanceof RequestError)) {
+          throw undo;
+        }
+      }
+
+      async function reconcile(target, keys, reason) {
+        const status = target.view.settingsStatus;
+        try {
+          applyStatus(target, await request('GET', target.path));
+        } catch (failure) {
+          if (!(failure instanceof RequestError)) {
+            throw failure;
           }
-          if (undo.status !== 401) {
+          target.secrets = {
+            ...target.secrets,
+            ...Object.fromEntries(keys.map((key) => [key, null])),
+          };
+          renderSummary(target);
+          propagate(target);
+          if (failure.status !== 401) {
             setStatus(
               status,
               'error',
-              `${reason} Enrolment failed and your saved token could not be removed. Unenrol to delete it.`,
+              `${reason} Enrolment failed and ureview could not check whether your saved token was removed. Reload the page to see it.`,
             );
           }
           return;
         }
-        setStatus(status, 'error', `${reason} Nothing was saved.`);
+        renderSummary(target);
+        propagate(target);
+        const kept = keys.some((key) => target.secrets[key]);
+        setStatus(
+          status,
+          'error',
+          kept
+            ? `${reason} Enrolment failed and your saved token could not be removed. Unenrol to delete it.`
+            : `${reason} Nothing was saved.`,
+        );
       }
 
       async function saveTokens(target) {
