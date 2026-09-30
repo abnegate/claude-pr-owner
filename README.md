@@ -103,7 +103,6 @@ Claude runs only on PRs whose author enrolled, with that author's own token and 
 | `UREVIEW_OAUTH_TOKEN_<LOGIN>` | secret | Output of `claude setup-token` |
 | `UREVIEW_API_KEY_<LOGIN>` | secret | Anthropic API key, the alternative to the OAuth token |
 | `UREVIEW_PUSH_TOKEN_<LOGIN>` | secret | PAT with `contents: write` for Claude's pushes (optional) |
-| `UREVIEW_PUSH_TOKEN` | secret | Shared fallback push PAT (optional) |
 
 Each name can live at repository or organization level. A repository value overrides an organization value of the same name, as GitHub resolves it. Variable names match case-insensitively.
 
@@ -162,7 +161,7 @@ jobs:
     secrets:
       oauth_token: ${{ secrets[needs.owner.outputs.oauth_secret] }}
       api_key: ${{ secrets[needs.owner.outputs.api_key_secret] }}
-      push_token: ${{ secrets[needs.owner.outputs.push_secret] || secrets.UREVIEW_PUSH_TOKEN }}
+      push_token: ${{ secrets[needs.owner.outputs.push_secret] }}
     with:
       owner: ${{ needs.owner.outputs.login }}
 ```
@@ -183,7 +182,7 @@ Pin both `uses:` to the same commit. `with:` takes the other inputs too, as the 
 
 `owner.yml` and the orchestrator's plan step each receive every variable visible to the calling repository, repository and organization alike, as one JSON environment string. Linux caps a single environment string at 128 KiB, so keep all visible variables together well under that, or both jobs fail before their script runs. Callers without `owner` do not pay this: the plan step then gets `{}`.
 
-Push token: `UREVIEW_PUSH_TOKEN_<LOGIN>`, then `UREVIEW_PUSH_TOKEN`, then `GITHUB_TOKEN` (with a warning, and no downstream CI).
+Push token: `UREVIEW_PUSH_TOKEN_<LOGIN>`, then `GITHUB_TOKEN` (with a warning, and no downstream CI).
 
 An enrolled owner with neither `UREVIEW_OAUTH_TOKEN_<LOGIN>` nor `UREVIEW_API_KEY_<LOGIN>` fails the plan job when a task applies to the event. Events with no task enabled skip quietly.
 
