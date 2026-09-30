@@ -384,21 +384,35 @@ describe('GET /api/repositories/:owner/:repository', () => {
     }
   });
 
-  test('reports the canonical names GitHub returns', async () => {
-    const routes = statusRoutes();
-    routes['GET /repos/abnegate/edge'].data = {
-      ...routes['GET /repos/abnegate/edge'].data,
-      name: 'Edge',
-      full_name: 'Abnegate/Edge',
-      owner: { login: 'Abnegate', type: 'User' },
-    };
-    const { send } = client(routes);
+  test('reads the settings of the canonical repository GitHub returns', async () => {
+    const routes = statusRoutes({ owner: 'Abnegate', repository: 'Edge' });
+    routes['GET /repos/abnegate/edge'] = routes['GET /repos/Abnegate/Edge'];
+    delete routes['GET /repos/Abnegate/Edge'];
+    const { send, calls } = client(routes);
     const response = await send('GET', '/api/repositories/abnegate/edge');
 
     assert.equal(response.status, 200);
     assert.equal(response.data.owner, 'Abnegate');
     assert.equal(response.data.name, 'Edge');
     assert.equal(response.data.fullName, 'Abnegate/Edge');
+    assert.deepEqual(response.data.config, {
+      review: true,
+      severities: 'critical,high',
+    });
+    assert.deepEqual(keys(calls).slice(0, 3), [
+      'GET /repos/abnegate/edge',
+      'GET /repos/Abnegate/Edge/installation',
+      'POST /app/installations/42/access_tokens',
+    ]);
+    assert.deepEqual(calls[2].body, {
+      repositories: ['Edge'],
+      permissions: READ,
+    });
+    assert.deepEqual(keys(actionsCalls(calls)).sort(), [
+      'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
+      'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
+      'GET /repos/Abnegate/Edge/actions/variables/UREVIEW_ABNEGATE',
+    ]);
   });
 
   test('reads the settings named for the signed-in user', async () => {
@@ -462,6 +476,55 @@ describe('repository push gate', () => {
       const response = await send(method, path, body);
 
       assert.equal(response.status, 403);
+      assert.deepEqual(keys(calls), ['GET /repos/abnegate/edge']);
+    });
+
+    test(`${method} ${path} under an old name acts on the renamed repository`, async () => {
+      const routes = writeRoutes({ repository: 'edge-renamed' });
+      const renamed = routes['GET /repos/abnegate/edge-renamed'];
+      delete routes['GET /repos/abnegate/edge-renamed'];
+      routes['GET /repos/abnegate/edge'] = renamed;
+      routes[
+        'GET /repos/abnegate/edge-renamed/actions/variables/UREVIEW_ABNEGATE'
+      ] = NOT_FOUND;
+      routes[
+        'GET /repos/abnegate/edge-renamed/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE'
+      ] = NOT_FOUND;
+      routes[
+        'GET /repos/abnegate/edge-renamed/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE'
+      ] = NOT_FOUND;
+      const { send, calls } = client(routes);
+      const response = await send(method, path, body);
+
+      assert.ok(response.status < 300, `status ${response.status}`);
+      assert.deepEqual(keys(calls).slice(0, 3), [
+        'GET /repos/abnegate/edge',
+        'GET /repos/abnegate/edge-renamed/installation',
+        'POST /app/installations/42/access_tokens',
+      ]);
+      assert.deepEqual(calls[2].body.repositories, ['edge-renamed']);
+      const store = actionsCalls(calls);
+      assert.ok(store.length > 0);
+      for (const call of store) {
+        assert.ok(
+          call.key.includes(' /repos/abnegate/edge-renamed/actions/'),
+          call.key,
+        );
+      }
+    });
+
+    test(`${method} ${path} without a canonical name is a GitHub failure and mints nothing`, async () => {
+      const { send, calls } = client(
+        gated({
+          'GET /repos/abnegate/edge': {
+            data: { permissions: { push: true }, owner: { login: 'abnegate' } },
+          },
+        }),
+      );
+      const response = await send(method, path, body);
+
+      assert.equal(response.status, 502);
+      assert.equal(response.data.error, 'github');
       assert.deepEqual(keys(calls), ['GET /repos/abnegate/edge']);
     });
 

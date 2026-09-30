@@ -103,8 +103,7 @@ async function pushable(fetch, token, installation) {
 
 async function authorize(context, permissions) {
   const { environment, fetch, now, params, user } = context;
-  const { owner, repository: name } = params;
-  const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repository)}`;
   const { status, data, headers } = await request(fetch, {
     path,
     token: user.token,
@@ -114,6 +113,11 @@ async function authorize(context, permissions) {
   }
   if (data?.permissions?.push !== true) {
     throw new GitHubError(403, 'GET', path);
+  }
+  const owner = data.owner?.login;
+  const name = data.name;
+  if (!isName(owner) || !isName(name)) {
+    throw new GitHubError(502, 'GET', path);
   }
   const jwt = appToken(environment.appId, environment.privateKey, now());
   const installation = await repositoryInstallation(fetch, {
@@ -134,6 +138,10 @@ async function authorize(context, permissions) {
     repository: data,
     store: Store.repository({ fetch, token, owner, name }),
   };
+}
+
+function isName(value) {
+  return typeof value === 'string' && value !== '';
 }
 
 function byFullName(left, right) {
