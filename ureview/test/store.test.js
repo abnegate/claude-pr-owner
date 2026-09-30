@@ -639,6 +639,60 @@ describe('Store.saveSecrets', () => {
     );
   });
 
+  test('lets every PUT settle before rejecting with the failed one', async () => {
+    const pair = await keypair();
+    let pushed = false;
+    const { fetch } = mockFetch({
+      [`GET ${repositoryBase}/secrets/public-key`]: {
+        data: { key_id: 'key-1', key: pair.encoded },
+      },
+      [`PUT ${repositoryBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: {
+        status: 422,
+        data: { message: 'Bad key' },
+      },
+      [`PUT ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]:
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          pushed = true;
+          return { status: 201 };
+        },
+    });
+    await assert.rejects(
+      repository(fetch).saveSecrets(names, {
+        oauth: 'sk-ant-oat01-token',
+        push: 'github_pat_push',
+      }),
+      (error) => error instanceof GitHubAppError && error.status === 422,
+    );
+    assert.equal(pushed, true, 'the push PUT settled before the rejection');
+  });
+
+  test('rejects with the first failure when every PUT fails', async () => {
+    const pair = await keypair();
+    const { fetch, calls } = mockFetch({
+      [`GET ${repositoryBase}/secrets/public-key`]: {
+        data: { key_id: 'key-1', key: pair.encoded },
+      },
+      [`PUT ${repositoryBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]:
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return { status: 422, data: { message: 'Bad key' } };
+        },
+      [`PUT ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: {
+        status: 403,
+        data: { message: 'Resource not accessible by integration' },
+      },
+    });
+    await assert.rejects(
+      repository(fetch).saveSecrets(names, {
+        oauth: 'sk-ant-oat01-token',
+        push: 'github_pat_push',
+      }),
+      (error) => error instanceof GitHubAppError && error.status === 422,
+    );
+    assert.equal(calls.filter((call) => call.method === 'PUT').length, 2);
+  });
+
   test('throws GitHubError when the public key is refused', async () => {
     const { fetch, calls } = mockFetch({
       [`GET ${organizationBase}/secrets/public-key`]: {

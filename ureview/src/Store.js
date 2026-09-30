@@ -115,7 +115,7 @@ export class Store {
     const scopes = await Promise.all(
       values.map(([name]) => this.#secretScope(name)),
     );
-    await Promise.all(
+    const writes = await Promise.allSettled(
       values.map(async ([name, value], index) => {
         const encrypted = await encrypt(data.key, value);
         await this.#send(
@@ -126,6 +126,10 @@ export class Store {
         );
       }),
     );
+    const failure = writes.find((write) => write.status === 'rejected');
+    if (failure !== undefined) {
+      throw failure.reason;
+    }
   }
 
   async remove(names) {

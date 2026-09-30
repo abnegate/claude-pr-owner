@@ -2802,9 +2802,9 @@
           throw error;
         }
         const enrolling = target.config === null;
-        const pristine =
-          enrolling &&
-          Object.values(target.secrets).every((value) => value === false);
+        const created = enrolling
+          ? Object.keys(tokens).filter((key) => target.secrets[key] === false)
+          : [];
         const messages = [];
         let saved = false;
         setStatus(view.settingsStatus, '', '');
@@ -2827,8 +2827,12 @@
           setStatus(view.settingsStatus, 'success', messages.join(' '));
           propagate(target);
         } catch (error) {
-          if (saved && pristine && error instanceof RequestError) {
-            await discardTokens(target, tokens, error);
+          if (
+            created.length > 0 &&
+            error instanceof RequestError &&
+            error.status !== 401
+          ) {
+            await discardTokens(target, tokens, created, error);
           } else {
             if (saved) {
               applyTokens(target, tokens);
@@ -2842,26 +2846,22 @@
         }
       }
 
-      async function discardTokens(target, tokens, error) {
-        if (error.status === 401) {
-          applyTokens(target, tokens);
-          return;
-        }
-        const keys = Object.keys(tokens);
-        const created = new URLSearchParams(keys.map((key) => [key, 'true']));
+      async function discardTokens(target, tokens, created, error) {
+        const query = new URLSearchParams(created.map((key) => [key, 'true']));
         let undo = null;
         try {
-          await request('DELETE', `${target.path}/tokens?${created}`);
+          await request('DELETE', `${target.path}/tokens?${query}`);
         } catch (caught) {
           undo = caught;
         }
-        await reconcile(target, keys, describe(error, target));
+        const replaced = Object.keys(tokens).length > created.length;
+        await reconcile(target, created, replaced, describe(error, target));
         if (undo !== null && !(undo instanceof RequestError)) {
           throw undo;
         }
       }
 
-      async function reconcile(target, keys, reason) {
+      async function reconcile(target, keys, replaced, reason) {
         const status = target.view.settingsStatus;
         try {
           applyStatus(target, await request('GET', target.path));
@@ -2886,14 +2886,20 @@
         }
         renderSummary(target);
         propagate(target);
-        const kept = keys.some((key) => target.secrets[key]);
         setStatus(
           status,
           'error',
-          kept
-            ? `${reason} Enrolment failed and your saved token could not be removed. Unenrol to delete it.`
-            : `${reason} Nothing was saved.`,
+          rollbackMessage(target, keys, replaced, reason),
         );
+      }
+
+      function rollbackMessage(target, keys, replaced, reason) {
+        if (keys.some((key) => target.secrets[key])) {
+          return `${reason} Enrolment failed and your saved token could not be removed. Unenrol to delete it.`;
+        }
+        return replaced
+          ? `${reason} Enrolment failed and the new token was removed. Your existing token may now hold the value you pasted.`
+          : `${reason} Nothing was saved.`;
       }
 
       async function saveTokens(target) {
