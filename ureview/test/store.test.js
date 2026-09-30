@@ -270,6 +270,32 @@ describe('Store.status', () => {
   });
 });
 
+describe('Store.variable', () => {
+  const path = `GET ${repositoryBase}/variables/UREVIEW_ABNEGATE`;
+
+  test('returns the stored value verbatim, or null when it is absent', async () => {
+    for (const [route, expected] of [
+      [{ data: { value: '{"review":true}' } }, '{"review":true}'],
+      [{ data: { value: 'not json' } }, 'not json'],
+      [{ data: {} }, ''],
+      [NOT_FOUND, null],
+    ]) {
+      const { fetch } = mockFetch({ [path]: route });
+      assert.equal(await repository(fetch).variable(names), expected);
+    }
+  });
+
+  test('throws on any other status', async () => {
+    const { fetch } = mockFetch({
+      [path]: { status: 502, data: {} },
+    });
+    await assert.rejects(
+      repository(fetch).variable(names),
+      (error) => error instanceof GitHubAppError && error.status === 502,
+    );
+  });
+});
+
 describe('Store.saveConfig', () => {
   const config = {
     model: 'claude-opus-5-5',

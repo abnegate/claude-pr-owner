@@ -1,10 +1,15 @@
-import { validate as validateConfig } from './config.js';
+import { parse, serialize, validate as validateConfig } from './config.js';
 import { EnrolmentError } from './EnrolmentError.js';
 import { validateTokens } from './secret.js';
 import { ValidationError } from './ValidationError.js';
 
 const FIELDS = new Set(['config', 'tokens']);
 const CLAUDE_TOKEN_REQUIRED = 'Provide a Claude token to enrol.';
+const Stored = Object.freeze({
+  SUBMITTED: 'submitted',
+  ABSENT: 'absent',
+  UNKNOWN: 'unknown',
+});
 
 export function validate(body) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -32,19 +37,55 @@ export async function enrol(
   if (lacksClaudeToken(kinds, existing) && !(await inheritsClaudeToken())) {
     throw new ValidationError(CLAUDE_TOKEN_REQUIRED);
   }
+  const created = existing.variable
+    ? []
+    : kinds.filter((kind) => !existing[kind]);
   try {
     await store.saveSecrets(names, tokens);
-    await store.saveConfig(names, config);
   } catch (thrown) {
-    const created = existing.variable
-      ? []
-      : kinds.filter((kind) => !existing[kind]);
     if (created.length === 0) {
       throw thrown;
     }
     throw new EnrolmentError(thrown, await store.removeSecrets(names, created));
   }
+  try {
+    await store.saveConfig(names, config);
+  } catch (thrown) {
+    if (created.length === 0) {
+      throw new EnrolmentError(thrown, { written: kinds });
+    }
+    switch (await reread(store, names, config)) {
+      case Stored.SUBMITTED:
+        break;
+      case Stored.ABSENT: {
+        const { removed, failed } = await store.removeSecrets(names, created);
+        throw new EnrolmentError(thrown, {
+          removed,
+          failed,
+          written: kinds.filter((kind) => !removed.includes(kind)),
+        });
+      }
+      default:
+        throw new EnrolmentError(thrown, { written: kinds, uncertain: true });
+    }
+  }
   return store.status(names);
+}
+
+async function reread(store, names, config) {
+  let value;
+  try {
+    value = await store.variable(names);
+  } catch {
+    return Stored.UNKNOWN;
+  }
+  if (value === null) {
+    return Stored.ABSENT;
+  }
+  const stored = parse(value);
+  return stored !== null && serialize(stored) === serialize(config)
+    ? Stored.SUBMITTED
+    : Stored.UNKNOWN;
 }
 
 function lacksClaudeToken(kinds, existing) {

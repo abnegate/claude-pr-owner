@@ -806,7 +806,11 @@ describe('PUT /api/organizations/:organization/enrolment', () => {
     });
 
     assert.equal(response.status, 502);
-    assert.deepEqual(response.data, { error: 'github', rolledBack: ['oauth'] });
+    assert.deepEqual(response.data, {
+      error: 'github',
+      rolledBack: ['oauth'],
+      tokensWritten: ['push'],
+    });
     assert.deepEqual([...state.secrets], ['push']);
   });
 
@@ -821,7 +825,10 @@ describe('PUT /api/organizations/:organization/enrolment', () => {
     });
 
     assert.equal(response.status, 502);
-    assert.deepEqual(response.data, { error: 'github' });
+    assert.deepEqual(response.data, {
+      error: 'github',
+      tokensWritten: ['oauth'],
+    });
     assert.equal(
       calls.some((call) => call.method === 'DELETE'),
       false,

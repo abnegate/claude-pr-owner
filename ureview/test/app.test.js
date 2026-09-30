@@ -553,6 +553,7 @@ describe('error mapping', () => {
       error: 'github',
       rolledBack: ['oauth'],
       rollbackFailed: ['push'],
+      tokensWritten: ['push'],
     });
     assert.deepEqual(context.logs, [
       ['PUT /api/repositories/abnegate/edge/enrolment 502'],

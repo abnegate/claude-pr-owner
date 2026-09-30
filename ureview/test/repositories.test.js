@@ -885,7 +885,7 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     const { send, calls } = client({
       ...writeRoutes({ type }),
       ...store.routes,
-      ...overrides,
+      ...(typeof overrides === 'function' ? overrides(store.state) : overrides),
     });
     return { send, calls, state: store.state };
   }
@@ -993,12 +993,115 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
 
     assert.equal(response.status, 502);
     assert.deepEqual(response.data, { error: 'github', rolledBack: ['oauth'] });
-    assert.deepEqual(
-      keys(mutations(calls).filter((call) => call.method === 'DELETE')),
-      [`DELETE ${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`],
+    const written = calls.findIndex(
+      (call) => call.key === `POST ${base}/variables`,
     );
+    assert.deepEqual(keys(calls.slice(written + 1)), [
+      `GET ${base}/variables/UREVIEW_ABNEGATE`,
+      `DELETE ${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
+    ]);
     assert.deepEqual([...state.secrets], ['apiKey']);
     assert.equal(state.variable, null);
+  });
+
+  test('keeps the enrolment when a lost response hid a settings write that landed', async () => {
+    const { send, calls, state } = enrolment({}, (fake) => ({
+      [`POST ${base}/variables`]: ({ body }) => {
+        fake.variable = body.value;
+        return { status: 502, data: {} };
+      },
+    }));
+    const response = await send('PUT', path, {
+      config: { severities: 'high,critical', review: true },
+      tokens: { oauth },
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.data, {
+      config: { review: true, severities: 'critical,high' },
+      secrets: { oauth: true, push: false, apiKey: false },
+    });
+    assert.equal(
+      calls.some((call) => call.method === 'DELETE'),
+      false,
+    );
+    assert.deepEqual([...state.secrets], ['oauth']);
+  });
+
+  test('flags an uncertain outcome instead of rolling back when the settings hold another value', async () => {
+    const { send, calls, state } = enrolment({}, (fake) => ({
+      [`POST ${base}/variables`]: () => {
+        fake.variable = '{"review":false}';
+        return { status: 502, data: {} };
+      },
+    }));
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { oauth },
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(response.data, {
+      error: 'github',
+      tokensWritten: ['oauth'],
+      uncertain: true,
+    });
+    assert.equal(
+      calls.some((call) => call.method === 'DELETE'),
+      false,
+    );
+    assert.deepEqual([...state.secrets], ['oauth']);
+  });
+
+  test('flags an uncertain outcome instead of rolling back when the settings cannot be re-read', async () => {
+    let reads = 0;
+    const { send, calls, state } = enrolment(
+      {},
+      {
+        [`POST ${base}/variables`]: { status: 502, data: {} },
+        [`GET ${base}/variables/UREVIEW_ABNEGATE`]: () =>
+          ++reads === 1 ? NOT_FOUND : { status: 503, data: {} },
+      },
+    );
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { oauth, push },
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(response.data, {
+      error: 'github',
+      tokensWritten: ['oauth', 'push'],
+      uncertain: true,
+    });
+    assert.equal(reads, 2);
+    assert.equal(
+      calls.some((call) => call.method === 'DELETE'),
+      false,
+    );
+    assert.deepEqual([...state.secrets].sort(), ['oauth', 'push']);
+  });
+
+  test('reports the tokens it replaced when the settings write fails', async () => {
+    const { send } = enrolment(
+      { variable: '{"review":true}', secrets: ['oauth', 'push'] },
+      {
+        [`PATCH ${base}/variables/UREVIEW_ABNEGATE`]: {
+          status: 502,
+          data: {},
+        },
+      },
+    );
+    const response = await send('PUT', path, {
+      config: { review: false },
+      tokens: { oauth },
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(response.data, {
+      error: 'github',
+      tokensWritten: ['oauth'],
+    });
   });
 
   test('never deletes a token that existed when the request arrived', async () => {
@@ -1012,7 +1115,11 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     });
 
     assert.equal(response.status, 502);
-    assert.deepEqual(response.data.rolledBack, ['oauth']);
+    assert.deepEqual(response.data, {
+      error: 'github',
+      rolledBack: ['oauth'],
+      tokensWritten: ['push'],
+    });
     assert.equal(
       calls.some(
         (call) =>
@@ -1068,7 +1175,10 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     });
 
     assert.equal(response.status, 502);
-    assert.deepEqual(response.data, { error: 'github' });
+    assert.deepEqual(response.data, {
+      error: 'github',
+      tokensWritten: ['oauth'],
+    });
     assert.equal(
       calls.some((call) => call.method === 'DELETE'),
       false,
@@ -1097,6 +1207,7 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
       error: 'github',
       rolledBack: ['push'],
       rollbackFailed: ['oauth'],
+      tokensWritten: ['oauth'],
     });
   });
 

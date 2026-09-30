@@ -148,10 +148,12 @@ function rateLimited(seconds) {
   );
 }
 
-function rollback({ rolledBack, rollbackFailed }) {
+function outcome({ rolledBack, rollbackFailed, tokensWritten, uncertain }) {
   return {
     ...(rolledBack.length === 0 ? {} : { rolledBack }),
     ...(rollbackFailed.length === 0 ? {} : { rollbackFailed }),
+    ...(tokensWritten.length === 0 ? {} : { tokensWritten }),
+    ...(uncertain ? { uncertain } : {}),
   };
 }
 
@@ -164,7 +166,7 @@ function annotate(response, fields) {
 
 function mapError(thrown, error, now) {
   if (thrown instanceof EnrolmentError) {
-    return annotate(mapError(thrown.cause, error, now), rollback(thrown));
+    return annotate(mapError(thrown.cause, error, now), outcome(thrown));
   }
   if (thrown instanceof ValidationError) {
     return failure(400, 'invalid', thrown.message);

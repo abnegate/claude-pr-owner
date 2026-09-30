@@ -63,7 +63,7 @@ export class Store {
 
   async status(names) {
     const [config, oauth, push, apiKey] = await Promise.all([
-      this.#variable(names.variable),
+      this.variable(names).then(parse),
       this.#secretExists(names.oauth),
       this.#secretExists(names.push),
       this.#secretExists(names.apiKey),
@@ -159,6 +159,18 @@ export class Store {
     return { variable, oauth, push, apiKey };
   }
 
+  async variable(names) {
+    const { status, data } = await this.#send(
+      'GET',
+      `/variables/${encodeURIComponent(names.variable)}`,
+      [200, 404],
+    );
+    if (status === 404) {
+      return null;
+    }
+    return typeof data?.value === 'string' ? data.value : '';
+  }
+
   async removeSecrets(names, kinds) {
     const deletes = await Promise.allSettled(
       kinds.map((kind) =>
@@ -172,15 +184,6 @@ export class Store {
     const settled = (status) =>
       kinds.filter((_, index) => deletes[index].status === status);
     return { removed: settled('fulfilled'), failed: settled('rejected') };
-  }
-
-  async #variable(name) {
-    const { status, data } = await this.#send(
-      'GET',
-      `/variables/${encodeURIComponent(name)}`,
-      [200, 404],
-    );
-    return status === 200 ? parse(data?.value) : null;
   }
 
   #secretExists(name) {

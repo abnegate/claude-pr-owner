@@ -1930,6 +1930,10 @@
       const SECOND = 1000;
 
       const TOKEN_KINDS = ['oauth', 'push'];
+      const TOKEN_NAMES = Object.freeze({
+        oauth: 'Claude token',
+        push: 'push token',
+      });
 
       const TOKEN_STATES = Object.freeze({
         set: { text: 'Set', className: 'chip set' },
@@ -1998,7 +2002,12 @@
           code,
           detail = '',
           retryAfter = null,
-          { rolledBack = [], rollbackFailed = [] } = {},
+          {
+            rolledBack = [],
+            rollbackFailed = [],
+            tokensWritten = [],
+            uncertain = false,
+          } = {},
         ) {
           super(detail || code || `Request failed with status ${status}`);
           this.name = 'RequestError';
@@ -2008,6 +2017,8 @@
           this.retryAfter = retryAfter;
           this.rolledBack = rolledBack;
           this.rollbackFailed = rollbackFailed;
+          this.tokensWritten = tokensWritten;
+          this.uncertain = uncertain;
         }
       }
 
@@ -2086,6 +2097,8 @@
           {
             rolledBack: tokenKinds(data?.rolledBack),
             rollbackFailed: tokenKinds(data?.rollbackFailed),
+            tokensWritten: tokenKinds(data?.tokensWritten),
+            uncertain: data?.uncertain === true,
           },
         );
       }
@@ -2890,8 +2903,17 @@
 
       function enrolmentFailure(error, target, tokens) {
         const reason = describe(error, target);
+        if (error.uncertain) {
+          return `${reason} Enrolment may have partly succeeded. Reload to check.`;
+        }
         if (error.rollbackFailed.length > 0) {
           return `${reason} Enrolment failed and the new token could not be removed. Unenrol to delete it.`;
+        }
+        const replaced = error.tokensWritten.filter(
+          (kind) => target.secrets[kind] === true,
+        );
+        if (replaced.length > 0) {
+          return `${reason} ${replacedTokensMessage(replaced)}`;
         }
         if (error.rolledBack.length === 0) {
           return reason;
@@ -2899,6 +2921,13 @@
         return error.rolledBack.length === Object.keys(tokens).length
           ? `${reason} Enrolment failed. Nothing was saved.`
           : `${reason} Enrolment failed and the new token was removed. Your existing token may now hold the value you pasted.`;
+      }
+
+      function replacedTokensMessage(kinds) {
+        const names = listNames(kinds.map((kind) => TOKEN_NAMES[kind]));
+        return kinds.length === 1
+          ? `Enrolment failed, but your pasted ${names} was saved and replaced the previous one.`
+          : `Enrolment failed, but your pasted ${names} were saved and replaced the previous ones.`;
       }
 
       async function reconcile(target, tokens, message) {
