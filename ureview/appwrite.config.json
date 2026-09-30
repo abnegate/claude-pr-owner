@@ -1,0 +1,23 @@
+{
+  "projectId": "ureview",
+  "projectName": "ureview",
+  "endpoint": "https://fra.cloud.appwrite.io/v1",
+  "functions": [
+    {
+      "$id": "ureview",
+      "name": "ureview",
+      "runtime": "node-22",
+      "execute": ["any"],
+      "events": [],
+      "scopes": [],
+      "schedule": "",
+      "timeout": 60,
+      "enabled": true,
+      "logging": true,
+      "entrypoint": "src/main.js",
+      "commands": "npm ci --omit=dev",
+      "path": ".",
+      "ignore": ["node_modules", "test"]
+    }
+  ]
+}

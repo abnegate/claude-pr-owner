@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>ureview setup</title>
+    <style>
+      :root {
+        --background: #f6f7f9;
+        --surface: #ffffff;
+        --text: #1b1f24;
+        --muted: #59636e;
+        --border: #d1d9e0;
+        --accent: #1f6feb;
+        --accent-text: #ffffff;
+        --code: #eef1f4;
+        --danger: #cf222e;
+        --danger-surface: #ffebe9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --background: #0d1117;
+          --surface: #151b23;
+          --text: #e6edf3;
+          --muted: #9198a1;
+          --border: #3d444d;
+          --accent: #388bfd;
+          --accent-text: #ffffff;
+          --code: #0d1117;
+          --danger: #ff7b72;
+          --danger-surface: #2d1417;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--text);
+        font:
+          16px/1.5 system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 48px 16px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+        line-height: 1.25;
+      }
+      h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: var(--muted);
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.9em;
+      }
+      section {
+        margin-top: 24px;
+        padding: 20px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        gap: 8px 24px;
+        margin: 0;
+      }
+      dd {
+        margin: 0;
+        min-width: 0;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      pre {
+        margin: 0;
+        padding: 16px;
+        max-height: 420px;
+        overflow: auto;
+        background: var(--code);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      pre:focus-visible,
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      form {
+        margin-top: 24px;
+      }
+      button {
+        width: 100%;
+        min-height: 44px;
+        padding: 10px 20px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: var(--accent-text);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .note {
+        margin: 12px 0 0;
+        font-size: 14px;
+      }
+      .error {
+        margin-top: 24px;
+        padding: 16px;
+        border: 1px solid var(--danger);
+        border-radius: 8px;
+        background: var(--danger-surface);
+        color: var(--text);
+      }
+      .error p {
+        margin: 0;
+        color: inherit;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      @media (min-width: 560px) {
+        button {
+          width: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Create the ureview GitHub App</h1>
+      <p>
+        Review the manifest below, then create the App on GitHub. It is
+        registered under the account you are signed in to on github.com.
+      </p>
+      <noscript>
+        <div class="error"><p>This page needs JavaScript.</p></div>
+      </noscript>
+      <div class="error" id="failure" role="alert" hidden>
+        <p id="failure-message"></p>
+      </div>
+      <div id="review" hidden>
+        <section aria-labelledby="summary-heading">
+          <h2 id="summary-heading">Summary</h2>
+          <dl id="summary"></dl>
+        </section>
+        <section aria-labelledby="permissions-heading">
+          <h2 id="permissions-heading">Permissions</h2>
+          <dl id="permissions"></dl>
+        </section>
+        <section aria-labelledby="manifest-heading">
+          <h2 id="manifest-heading">Manifest</h2>
+          <pre id="manifest" tabindex="0" aria-label="Manifest JSON"></pre>
+        </section>
+        <form id="create" method="post">
+          <input type="hidden" name="manifest" id="manifest-field" />
+          <button type="submit">Create GitHub App</button>
+          <p class="note">
+            GitHub returns you to <code id="return"></code> when it is done.
+          </p>
+        </form>
+      </div>
+    </main>
+    <script>
+      const STATE_KEY = 'ureview-manifest-state';
+      const PERMISSION_LABELS = {
+        metadata: 'Metadata',
+        secrets: 'Repository secrets',
+        actions_variables: 'Repository variables',
+        organization_secrets: 'Organization secrets',
+        organization_actions_variables: 'Organization variables',
+      };
+
+      function fail(message) {
+        document.getElementById('failure-message').textContent = message;
+        document.getElementById('failure').hidden = false;
+      }
+
+      function resolveOrigin() {
+        if (location.protocol !== 'file:') {
+          return location.origin;
+        }
+        const value = new URLSearchParams(location.search).get('origin');
+        if (value === null) {
+          return null;
+        }
+        try {
+          const url = new URL(value);
+          const origin = value.replace(/\/+$/, '');
+          return url.protocol === 'https:' && url.origin === origin
+            ? origin
+            : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function buildManifest(origin) {
+        return {
+          name: 'ureview',
+          description: 'Self-serve per-user Claude tokens for claude-pr-owner',
+          url: origin,
+          public: true,
+          hook_attributes: { url: `${origin}/webhooks`, active: false },
+          redirect_url: `${origin}/setup/complete`,
+          callback_urls: [`${origin}/auth/callback`],
+          setup_url: `${origin}/`,
+          setup_on_update: false,
+          request_oauth_on_install: false,
+          default_permissions: {
+            metadata: 'read',
+            secrets: 'write',
+            actions_variables: 'write',
+            organization_secrets: 'write',
+            organization_actions_variables: 'write',
+          },
+          default_events: [],
+        };
+      }
+
+      function fillList(list, entries) {
+        for (const [term, detail] of entries) {
+          const termElement = document.createElement('dt');
+          termElement.textContent = term;
+          const detailElement = document.createElement('dd');
+          detailElement.textContent = detail;
+          list.append(termElement, detailElement);
+        }
+      }
+
+      function storeState() {
+        if (typeof crypto.randomUUID !== 'function') {
+          return null;
+        }
+        const state = crypto.randomUUID();
+        try {
+          sessionStorage.setItem(STATE_KEY, state);
+        } catch {
+          return null;
+        }
+        return state;
+      }
+
+      function render() {
+        const origin = resolveOrigin();
+        if (origin === null) {
+          fail(
+            location.protocol === 'file:'
+              ? 'Pass the function origin, for example ?origin=https://ureview.example.com, when opening this file directly.'
+              : 'The page origin could not be determined.',
+          );
+          return;
+        }
+        const state = storeState();
+        if (state === null) {
+          fail(
+            'This browser cannot generate or store the setup state. Enable session storage and reload.',
+          );
+          return;
+        }
+        const manifest = buildManifest(origin);
+        const action = new URL('https://github.com/settings/apps/new');
+        action.search = new URLSearchParams({ state }).toString();
+
+        fillList(document.getElementById('summary'), [
+          ['Name', manifest.name],
+          ['Homepage', manifest.url],
+          ['Visibility', manifest.public ? 'Public' : 'Private'],
+          ['Webhook', manifest.hook_attributes.active ? 'Active' : 'Inactive'],
+        ]);
+        fillList(
+          document.getElementById('permissions'),
+          Object.entries(manifest.default_permissions).map(([key, access]) => [
+            PERMISSION_LABELS[key] ?? key,
+            access,
+          ]),
+        );
+        document.getElementById('manifest').textContent = JSON.stringify(
+          manifest,
+          null,
+          2,
+        );
+        document.getElementById('manifest-field').value =
+          JSON.stringify(manifest);
+        document.getElementById('return').textContent = manifest.redirect_url;
+        document.getElementById('create').action = action.toString();
+        document.getElementById('review').hidden = false;
+      }
+
+      render();
+    </script>
+  </body>
+</html>

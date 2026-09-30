@@ -1,0 +1,20 @@
+{
+  "name": "ureview",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "src/main.js",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "libsodium-wrappers": "^0.8.4"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.9"
+  }
+}

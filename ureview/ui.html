@@ -1,0 +1,3376 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>ureview</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --font-sans:
+          ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+          'Helvetica Neue', Arial, sans-serif;
+        --font-mono:
+          ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+          'Liberation Mono', monospace;
+        --background: #f6f6f3;
+        --surface: #ffffff;
+        --surface-muted: #f1f1ed;
+        --surface-hover: #fafaf8;
+        --border: #e4e4de;
+        --border-strong: #d0d0c8;
+        --text: #1c1c19;
+        --text-muted: #62625b;
+        --text-faint: #8e8e85;
+        --primary: #1c1c19;
+        --primary-text: #fbfbf9;
+        --primary-hover: #34342f;
+        --accent: #2c7a63;
+        --accent-text: #1f604d;
+        --accent-soft: #e5f1ec;
+        --accent-border: #b9dccf;
+        --accent-ring: rgba(44, 122, 99, 0.22);
+        --info-text: #3552a0;
+        --info-soft: #eaeef9;
+        --info-border: #c6d1ef;
+        --warning-text: #875400;
+        --warning-soft: #fbf1dc;
+        --warning-border: #ecd5a3;
+        --danger: #b42a20;
+        --danger-soft: #fbecea;
+        --danger-border: #efc2bd;
+        --danger-ring: rgba(180, 42, 32, 0.2);
+        --track: #d5d5cd;
+        --knob: #ffffff;
+        --focus: #2c7a63;
+        --critical: #c8372c;
+        --high: #d9731a;
+        --medium: #c9a21b;
+        --low: #8e8e85;
+        --shadow:
+          0 1px 0 rgba(28, 28, 25, 0.04), 0 1px 2px rgba(28, 28, 25, 0.04);
+        --shadow-raised:
+          0 1px 0 rgba(28, 28, 25, 0.04),
+          0 8px 24px -12px rgba(28, 28, 25, 0.18);
+        --radius: 12px;
+        --gutter: 16px;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --background: #111110;
+          --surface: #191917;
+          --surface-muted: #21211e;
+          --surface-hover: #1e1e1b;
+          --border: #2b2b27;
+          --border-strong: #3a3a35;
+          --text: #ecece7;
+          --text-muted: #a3a39a;
+          --text-faint: #75756d;
+          --primary: #ecece7;
+          --primary-text: #151513;
+          --primary-hover: #ffffff;
+          --accent: #5cbf9f;
+          --accent-text: #7fd3b6;
+          --accent-soft: #15302a;
+          --accent-border: #24504a;
+          --accent-ring: rgba(92, 191, 159, 0.28);
+          --info-text: #9db2f2;
+          --info-soft: #1a2138;
+          --info-border: #2d3a60;
+          --warning-text: #e8b85c;
+          --warning-soft: #2e2413;
+          --warning-border: #4d3b1b;
+          --danger: #f08378;
+          --danger-soft: #331a17;
+          --danger-border: #5a2a25;
+          --danger-ring: rgba(240, 131, 120, 0.25);
+          --track: #3d3d38;
+          --knob: #f4f4f0;
+          --focus: #5cbf9f;
+          --critical: #f0705f;
+          --high: #f09a4a;
+          --medium: #e3c454;
+          --low: #85857c;
+          --shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+          --shadow-raised:
+            0 1px 0 rgba(0, 0, 0, 0.3), 0 12px 32px -16px rgba(0, 0, 0, 0.6);
+        }
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--background);
+        color: var(--text);
+        font: 14px/1.5 var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        overflow-x: hidden;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      code,
+      .mono {
+        font-family: var(--font-mono);
+      }
+
+      code {
+        font-size: 0.9em;
+        padding: 1px 6px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: var(--surface-muted);
+        white-space: nowrap;
+      }
+
+      :focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .shell {
+        width: 100%;
+        max-width: 928px;
+        margin: 0 auto;
+        padding: 0 var(--gutter);
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        border-bottom: 1px solid var(--border);
+        background: color-mix(in srgb, var(--background) 86%, transparent);
+        -webkit-backdrop-filter: saturate(1.4) blur(10px);
+        backdrop-filter: saturate(1.4) blur(10px);
+      }
+
+      .topbar .shell {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        height: 56px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 600;
+        font-size: 15px;
+        letter-spacing: -0.01em;
+        text-decoration: none;
+        border-radius: 6px;
+      }
+
+      .brand-mark {
+        width: 24px;
+        height: 24px;
+        flex: none;
+      }
+
+      .brand-mark rect {
+        fill: var(--primary);
+      }
+
+      .brand-mark path {
+        stroke: var(--primary-text);
+      }
+
+      .account {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .avatar {
+        width: 26px;
+        height: 26px;
+        flex: none;
+        border-radius: 50%;
+        border: 1px solid var(--border);
+        background: var(--surface-muted);
+        object-fit: cover;
+      }
+
+      .avatar-fallback {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+      }
+
+      .account-login {
+        font-size: 13px;
+        color: var(--text-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+
+      main {
+        flex: 1;
+        width: 100%;
+        padding: 36px 0 72px;
+      }
+
+      [tabindex='-1']:focus {
+        outline: none;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        height: 34px;
+        padding: 0 14px;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--text);
+        font: 500 13.5px/1 var(--font-sans);
+        text-decoration: none;
+        white-space: nowrap;
+        cursor: pointer;
+        transition:
+          background-color 120ms ease,
+          border-color 120ms ease,
+          color 120ms ease;
+      }
+
+      .button:hover {
+        background: var(--surface-hover);
+        border-color: var(--text-faint);
+      }
+
+      .button:disabled {
+        opacity: 0.6;
+        cursor: progress;
+      }
+
+      .button.primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: var(--primary-text);
+      }
+
+      .button.primary:hover {
+        background: var(--primary-hover);
+        border-color: var(--primary-hover);
+      }
+
+      .button.quiet {
+        border-color: transparent;
+        background: transparent;
+        color: var(--text-muted);
+      }
+
+      .button.quiet:hover {
+        color: var(--text);
+        background: var(--surface-muted);
+      }
+
+      .button.danger {
+        border-color: transparent;
+        background: transparent;
+        color: var(--danger);
+      }
+
+      .button.danger:hover {
+        background: var(--danger-soft);
+        border-color: var(--danger-border);
+      }
+
+      .button.small {
+        height: 28px;
+        padding: 0 10px;
+        font-size: 12.5px;
+        border-radius: 7px;
+      }
+
+      .button.large {
+        height: 44px;
+        padding: 0 20px;
+        font-size: 15px;
+        border-radius: 10px;
+      }
+
+      .button svg {
+        width: 16px;
+        height: 16px;
+        flex: none;
+        fill: currentColor;
+      }
+
+      .link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--accent-text);
+        font-weight: 500;
+        font-size: 13.5px;
+        text-decoration: none;
+        border-radius: 4px;
+      }
+
+      .link:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+
+      .link svg {
+        width: 14px;
+        height: 14px;
+        flex: none;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .eyebrow {
+        font: 500 12px/1.4 var(--font-mono);
+        color: var(--text-faint);
+        letter-spacing: 0.02em;
+      }
+
+      .label {
+        display: block;
+        margin: 0;
+        padding: 0;
+        font-size: 11.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
+      .optional {
+        margin-left: 4px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        text-transform: none;
+        color: var(--text-faint);
+      }
+
+      .hint {
+        font-size: 12.5px;
+        color: var(--text-muted);
+      }
+
+      .hint.spaced {
+        margin-top: 8px;
+      }
+
+      .hero {
+        max-width: 560px;
+        margin: 6vh auto 0;
+      }
+
+      .hero-panel {
+        display: grid;
+        gap: 20px;
+        padding: 24px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: var(--surface);
+        box-shadow: var(--shadow-raised);
+      }
+
+      .hero h1 {
+        font-size: 26px;
+        line-height: 1.2;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+        text-wrap: balance;
+      }
+
+      .hero-lede {
+        color: var(--text-muted);
+        font-size: 15px;
+        text-wrap: pretty;
+      }
+
+      .hero-steps {
+        display: grid;
+        gap: 10px;
+        margin: 0;
+        padding: 16px 0 0;
+        border-top: 1px solid var(--border);
+        list-style: none;
+        counter-reset: step;
+      }
+
+      .hero-steps li {
+        display: grid;
+        grid-template-columns: 22px minmax(0, 1fr);
+        gap: 10px;
+        align-items: baseline;
+        color: var(--text-muted);
+        counter-increment: step;
+      }
+
+      .hero-steps li::before {
+        content: counter(step);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border: 1px solid var(--border-strong);
+        border-radius: 50%;
+        font: 600 11px/1 var(--font-mono);
+        color: var(--text-muted);
+        transform: translateY(-1px);
+      }
+
+      .hero-steps strong {
+        color: var(--text);
+        font-weight: 550;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px 16px;
+      }
+
+      .notice {
+        padding: 10px 12px;
+        border: 1px solid var(--warning-border);
+        border-radius: 8px;
+        background: var(--warning-soft);
+        color: var(--warning-text);
+        font-size: 13px;
+      }
+
+      .loading {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        justify-content: center;
+        padding: 18vh 0;
+        color: var(--text-muted);
+      }
+
+      .spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--border-strong);
+        border-top-color: var(--text-muted);
+        border-radius: 50%;
+        animation: spin 700ms linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .intro {
+        display: grid;
+        gap: 18px;
+      }
+
+      .intro h1 {
+        font-size: 24px;
+        line-height: 1.25;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+        text-wrap: balance;
+      }
+
+      .intro-lede {
+        max-width: 64ch;
+        color: var(--text-muted);
+        text-wrap: pretty;
+      }
+
+      .steps {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+        margin: 6px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr);
+        gap: 12px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+      }
+
+      .step-index {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: var(--surface-muted);
+        border: 1px solid var(--border);
+        font: 600 11.5px/1 var(--font-mono);
+        color: var(--text-muted);
+      }
+
+      .step-title {
+        font-weight: 600;
+        font-size: 13.5px;
+      }
+
+      .step-text {
+        margin-top: 2px;
+        font-size: 13px;
+        color: var(--text-muted);
+        text-wrap: pretty;
+      }
+
+      .copy {
+        margin-top: 10px;
+      }
+
+      .copy svg {
+        width: 14px;
+        height: 14px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.4;
+      }
+
+      .group {
+        margin-top: 44px;
+      }
+
+      .group-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 6px 16px;
+      }
+
+      .group-head h2 {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 16px;
+        font-weight: 620;
+        letter-spacing: -0.01em;
+      }
+
+      .count {
+        padding: 1px 7px;
+        border-radius: 999px;
+        background: var(--surface-muted);
+        border: 1px solid var(--border);
+        font: 500 11.5px/1.5 var(--font-mono);
+        color: var(--text-muted);
+      }
+
+      .group-note {
+        margin-top: 4px;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+
+      .list {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .list.compact {
+        gap: 6px;
+      }
+
+      .filter {
+        position: relative;
+        margin-top: 14px;
+      }
+
+      .filter svg {
+        position: absolute;
+        top: 50%;
+        left: 12px;
+        width: 15px;
+        height: 15px;
+        margin-top: -7.5px;
+        fill: none;
+        stroke: var(--text-faint);
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        pointer-events: none;
+      }
+
+      .filter .input {
+        padding-left: 34px;
+        font-family: var(--font-sans);
+        -webkit-appearance: none;
+        appearance: none;
+      }
+
+      .no-match {
+        padding: 18px 0 4px;
+        color: var(--text-muted);
+        font-size: 13px;
+        text-align: center;
+        overflow-wrap: anywhere;
+      }
+
+      .skeleton {
+        height: 58px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: linear-gradient(
+          90deg,
+          var(--surface) 0%,
+          var(--surface-muted) 40%,
+          var(--surface) 80%
+        );
+        background-size: 200% 100%;
+        animation: shimmer 1.4s ease-in-out infinite;
+      }
+
+      @keyframes shimmer {
+        from {
+          background-position: 100% 0;
+        }
+        to {
+          background-position: -100% 0;
+        }
+      }
+
+      .empty {
+        display: grid;
+        justify-items: center;
+        gap: 8px;
+        padding: 36px 24px;
+        border: 1px dashed var(--border-strong);
+        border-radius: var(--radius);
+        text-align: center;
+      }
+
+      .empty svg {
+        width: 28px;
+        height: 28px;
+        margin-bottom: 4px;
+        stroke: var(--text-faint);
+        fill: none;
+        stroke-width: 1.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .empty h3 {
+        font-size: 15px;
+        font-weight: 600;
+      }
+
+      .empty p {
+        max-width: 44ch;
+        color: var(--text-muted);
+        font-size: 13px;
+      }
+
+      .empty .button {
+        margin-top: 8px;
+      }
+
+      .inline-error {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px 16px;
+        padding: 12px 14px;
+        border: 1px solid var(--danger-border);
+        border-radius: 10px;
+        background: var(--danger-soft);
+        color: var(--danger);
+        font-size: 13px;
+      }
+
+      .card {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: var(--shadow);
+        transition: border-color 120ms ease;
+      }
+
+      .card[open] {
+        border-color: var(--border-strong);
+        box-shadow: var(--shadow-raised);
+      }
+
+      .card-summary {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr);
+        grid-template-areas:
+          'chevron title'
+          '. tags'
+          '. meta';
+        align-items: center;
+        gap: 0 12px;
+        padding: 14px var(--gutter);
+        list-style: none;
+        cursor: pointer;
+        border-radius: var(--radius);
+        user-select: none;
+      }
+
+      .card-summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .card-summary:hover {
+        background: var(--surface-hover);
+      }
+
+      .card[open] > .card-summary {
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+      }
+
+      .card-summary:focus-visible {
+        outline-offset: -2px;
+      }
+
+      .chevron {
+        grid-area: chevron;
+        width: 16px;
+        height: 16px;
+        stroke: var(--text-faint);
+        fill: none;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        transition: transform 150ms ease;
+      }
+
+      .card[open] .chevron {
+        transform: rotate(90deg);
+      }
+
+      .card-title {
+        grid-area: title;
+        min-width: 0;
+        font-size: 13.5px;
+        overflow-wrap: anywhere;
+      }
+
+      .card-title-owner {
+        color: var(--text-muted);
+      }
+
+      .card-title-separator {
+        margin: 0 1px;
+        color: var(--text-faint);
+      }
+
+      .card-title-name {
+        font-weight: 600;
+      }
+
+      .card-tags {
+        grid-area: tags;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+      }
+
+      .card-tags:not(:has(> :not([hidden]))) {
+        display: none;
+      }
+
+      .card-meta {
+        grid-area: meta;
+        min-width: 0;
+        margin-top: 6px;
+        overflow: hidden;
+        font: 12px/1.4 var(--font-mono);
+        color: var(--text-muted);
+      }
+
+      .meta-line {
+        display: flex;
+        flex-wrap: wrap;
+        row-gap: 2px;
+        margin-left: -15px;
+      }
+
+      .meta-line > span {
+        position: relative;
+        padding-left: 15px;
+      }
+
+      .meta-line > span::before {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 7px;
+        width: 1px;
+        height: 10px;
+        margin-top: -5px;
+        background: var(--border-strong);
+      }
+
+      .card-meta:empty {
+        display: none;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 9px 2px 8px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface-muted);
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 550;
+        line-height: 1.45;
+        white-space: nowrap;
+      }
+
+      .badge::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.85;
+      }
+
+      .badge.enrolled {
+        color: var(--accent-text);
+        background: var(--accent-soft);
+        border-color: var(--accent-border);
+      }
+
+      .badge.inherited {
+        color: var(--info-text);
+        background: var(--info-soft);
+        border-color: var(--info-border);
+      }
+
+      .badge.none::before {
+        background: transparent;
+        box-shadow: inset 0 0 0 1.5px currentColor;
+      }
+
+      .badge.warning {
+        color: var(--warning-text);
+        background: var(--warning-soft);
+        border-color: var(--warning-border);
+      }
+
+      .card-body {
+        border-top: 1px solid var(--border);
+      }
+
+      .card-loading {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 18px var(--gutter);
+        color: var(--text-muted);
+        font-size: 13px;
+      }
+
+      .section {
+        padding: 18px var(--gutter);
+      }
+
+      .section + .section {
+        border-top: 1px solid var(--border);
+      }
+
+      .section-head {
+        display: grid;
+        gap: 4px;
+        margin-bottom: 14px;
+      }
+
+      .notes {
+        display: grid;
+        gap: 8px;
+        margin-bottom: 18px;
+      }
+
+      .notes:not(:has(> :not([hidden]))) {
+        display: none;
+      }
+
+      .card-note {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: var(--surface-muted);
+        color: var(--text-muted);
+        font-size: 13px;
+        text-wrap: pretty;
+      }
+
+      .card-note.warning {
+        background: var(--warning-soft);
+        color: var(--warning-text);
+      }
+
+      .settings-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 22px;
+      }
+
+      fieldset {
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        border: 0;
+      }
+
+      legend {
+        padding: 0;
+      }
+
+      .flags {
+        display: grid;
+        margin-top: 6px;
+        container-type: inline-size;
+      }
+
+      .flag-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .flag-row:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
+      }
+
+      @container (min-width: 400px) {
+        .flag-row {
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 16px;
+        }
+      }
+
+      .flag-name {
+        display: block;
+        font-weight: 550;
+        font-size: 13.5px;
+      }
+
+      .flag-hint {
+        display: block;
+        margin-top: 1px;
+        font-size: 12.5px;
+        color: var(--text-muted);
+        text-wrap: pretty;
+      }
+
+      .segmented {
+        display: inline-grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+        justify-self: start;
+        padding: 2px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--surface-muted);
+      }
+
+      .segment {
+        position: relative;
+        display: block;
+      }
+
+      .segment input {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        opacity: 0;
+        cursor: pointer;
+      }
+
+      .segment-face {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 26px;
+        padding: 0 11px;
+        border-radius: 7px;
+        color: var(--text-muted);
+        font-size: 12.5px;
+        font-weight: 500;
+        white-space: nowrap;
+        transition:
+          background-color 120ms ease,
+          color 120ms ease,
+          box-shadow 120ms ease;
+      }
+
+      .segment:hover .segment-face {
+        color: var(--text);
+      }
+
+      .segment input:checked + .segment-face {
+        background: var(--surface);
+        color: var(--text);
+        box-shadow:
+          0 0 0 1px var(--border-strong),
+          var(--shadow);
+      }
+
+      .segment input[value='on']:checked + .segment-face {
+        background: var(--accent-soft);
+        color: var(--accent-text);
+        box-shadow: 0 0 0 1px var(--accent-border);
+      }
+
+      .segment input:focus-visible + .segment-face {
+        outline: 2px solid var(--focus);
+        outline-offset: 1px;
+      }
+
+      .side {
+        display: grid;
+        align-content: start;
+        gap: 22px;
+      }
+
+      .checks {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .check {
+        position: relative;
+      }
+
+      .check input {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        opacity: 0;
+        cursor: pointer;
+      }
+
+      .check-face {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 9px;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--text-muted);
+        font-size: 12.5px;
+        font-weight: 500;
+        transition:
+          background-color 120ms ease,
+          border-color 120ms ease,
+          color 120ms ease;
+      }
+
+      .check input:checked + .check-face {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+        color: var(--text);
+      }
+
+      .check input:checked + .check-face .dot {
+        background: var(--dot);
+      }
+
+      .check input:focus-visible + .check-face {
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
+      }
+
+      .check:hover .check-face {
+        border-color: var(--text-faint);
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex: none;
+        box-shadow: inset 0 0 0 1.5px var(--dot);
+      }
+
+      .dot.critical {
+        --dot: var(--critical);
+      }
+
+      .dot.high {
+        --dot: var(--high);
+      }
+
+      .dot.medium {
+        --dot: var(--medium);
+      }
+
+      .dot.low {
+        --dot: var(--low);
+      }
+
+      .field {
+        display: grid;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .field-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 20px;
+      }
+
+      .input {
+        width: 100%;
+        height: 36px;
+        padding: 0 11px;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--text);
+        font: 13px/1 var(--font-mono);
+        transition:
+          border-color 120ms ease,
+          box-shadow 120ms ease;
+      }
+
+      .input::placeholder {
+        color: var(--text-faint);
+        font-family: var(--font-sans);
+      }
+
+      .input:hover {
+        border-color: var(--text-faint);
+      }
+
+      .input:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-ring);
+      }
+
+      .input[aria-invalid='true'] {
+        border-color: var(--danger);
+      }
+
+      .input[aria-invalid='true']:focus {
+        box-shadow: 0 0 0 3px var(--danger-ring);
+      }
+
+      .token-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 16px;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 1px 8px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface-muted);
+        color: var(--text-faint);
+        font-size: 11.5px;
+        font-weight: 550;
+        line-height: 1.5;
+        white-space: nowrap;
+      }
+
+      .chip.set {
+        color: var(--accent-text);
+        background: var(--accent-soft);
+        border-color: var(--accent-border);
+      }
+
+      .chip.inherited {
+        color: var(--info-text);
+        background: var(--info-soft);
+        border-color: var(--info-border);
+      }
+
+      .chip.unknown {
+        color: var(--warning-text);
+        background: var(--warning-soft);
+        border-color: var(--warning-border);
+      }
+
+      .chip.set::before,
+      .chip.inherited::before {
+        content: '';
+        width: 3.5px;
+        height: 7px;
+        margin: -2px 1px 0 1px;
+        border-right: 1.5px solid currentColor;
+        border-bottom: 1.5px solid currentColor;
+        transform: rotate(45deg);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px 14px;
+        margin-top: 20px;
+      }
+
+      .status {
+        min-width: 0;
+        font-size: 13px;
+        color: var(--text-muted);
+        overflow-wrap: anywhere;
+      }
+
+      .status.success {
+        color: var(--accent-text);
+      }
+
+      .status.error {
+        color: var(--danger);
+      }
+
+      .card-foot {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px 16px;
+        padding: 12px var(--gutter);
+        border-top: 1px solid var(--border);
+        border-radius: 0 0 var(--radius) var(--radius);
+        background: var(--surface-muted);
+      }
+
+      .names {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px 14px;
+        min-width: 0;
+        font-size: 11.5px;
+        color: var(--text-faint);
+      }
+
+      .names-group {
+        display: inline-flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0 6px;
+        min-width: 0;
+      }
+
+      .names-group > span {
+        overflow-wrap: anywhere;
+      }
+
+      .names-label {
+        font-family: var(--font-sans);
+      }
+
+      .foot-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-left: auto;
+      }
+
+      .muted-note {
+        display: grid;
+        gap: 6px;
+        margin-top: 12px;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+
+      .page-footer {
+        border-top: 1px solid var(--border);
+        padding: 18px 0 24px;
+        font-size: 12.5px;
+        color: var(--text-faint);
+      }
+
+      .page-footer .shell {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 6px 16px;
+      }
+
+      .page-footer a {
+        color: var(--text-muted);
+        text-underline-offset: 3px;
+      }
+
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 20px;
+        z-index: 20;
+        max-width: calc(100vw - 2 * var(--gutter));
+        padding: 10px 14px;
+        border-radius: 10px;
+        background: var(--primary);
+        color: var(--primary-text);
+        font-size: 13px;
+        box-shadow: var(--shadow-raised);
+        transform: translateX(-50%);
+      }
+
+      @media (min-width: 640px) {
+        :root {
+          --gutter: 20px;
+        }
+
+        .shell {
+          padding: 0 24px;
+        }
+
+        main {
+          padding-top: 48px;
+        }
+
+        .card-summary {
+          grid-template-columns: 16px minmax(0, 1fr) auto;
+          grid-template-areas:
+            'chevron title tags'
+            '. meta meta';
+        }
+
+        .card-tags {
+          justify-content: flex-end;
+          margin-top: 0;
+        }
+
+        .card-meta {
+          margin-top: 4px;
+        }
+
+        .token-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .hero-panel {
+          padding: 40px;
+        }
+
+        .hero h1 {
+          font-size: 30px;
+        }
+      }
+
+      @media (min-width: 780px) {
+        .steps {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .settings-grid {
+          grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+          gap: 36px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="shell">
+        <a class="brand" href="/">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="7" />
+            <path
+              d="M7.5 7.5v4.25a4.5 4.5 0 0 0 9 0V7.5"
+              fill="none"
+              stroke-width="2.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span>ureview</span>
+        </a>
+        <div class="account" id="account" hidden>
+          <img
+            class="avatar"
+            id="avatar"
+            alt=""
+            width="26"
+            height="26"
+            hidden
+          />
+          <span
+            class="avatar avatar-fallback"
+            id="avatar-fallback"
+            aria-hidden="true"
+          ></span>
+          <span class="account-login mono" id="account-login"></span>
+          <button type="button" class="button quiet small" id="sign-out">
+            Sign out
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <div class="shell">
+        <section id="view-loading" aria-live="polite">
+          <p class="loading">
+            <span class="spinner" aria-hidden="true"></span>Loading
+          </p>
+        </section>
+
+        <section id="view-signed-out" class="hero" hidden>
+          <div class="hero-panel">
+            <p class="eyebrow">claude-pr-owner</p>
+            <h1 tabindex="-1" id="signed-out-heading">
+              Claude on your pull requests, with your own token
+            </h1>
+            <p class="notice" id="signed-out-notice" role="status" hidden></p>
+            <p class="hero-lede">
+              Choose which tasks Claude runs on the pull requests you open, and
+              store the Claude token they run with, per repository or for a
+              whole organization.
+            </p>
+            <div class="hero-actions">
+              <a class="button primary large" href="/auth/login">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"
+                  />
+                </svg>
+                Sign in with GitHub
+              </a>
+            </div>
+            <ol class="hero-steps">
+              <li>
+                <span
+                  ><strong>Sign in with GitHub.</strong> ureview lists
+                  repositories where it is installed and you can push.</span
+                >
+              </li>
+              <li>
+                <span
+                  ><strong>Paste a token.</strong> Run
+                  <code>claude setup-token</code> in a terminal, then paste the
+                  token.</span
+                >
+              </li>
+              <li>
+                <span
+                  ><strong>Pick tasks.</strong> Review, comments, improvement,
+                  healing and bots, each on, off or left to the workflow.</span
+                >
+              </li>
+            </ol>
+          </div>
+        </section>
+
+        <section id="view-unconfigured" class="hero" hidden>
+          <div class="hero-panel">
+            <p class="eyebrow">setup required</p>
+            <h1>ureview is not configured yet</h1>
+            <p class="hero-lede">
+              The GitHub App behind ureview has not been created for this
+              deployment, so nobody can sign in yet. Whoever hosts ureview
+              finishes setup from the setup page.
+            </p>
+            <div class="hero-actions">
+              <a class="button" href="/setup">Open setup</a>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-failure" class="hero" hidden>
+          <div class="hero-panel">
+            <p class="eyebrow">error</p>
+            <h1>ureview could not load</h1>
+            <p class="hero-lede" id="failure-message"></p>
+            <div class="hero-actions">
+              <button type="button" class="button primary" id="retry">
+                Try again
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <div id="view-app" hidden>
+          <section class="intro" aria-labelledby="intro-heading">
+            <h1 id="intro-heading">Claude on your pull requests</h1>
+            <p class="intro-lede">
+              These settings apply only to pull requests you open. Repository
+              settings take precedence over organization settings, and anything
+              you leave unset falls back to the workflow's own inputs.
+            </p>
+            <ol class="steps">
+              <li class="step">
+                <span class="step-index" aria-hidden="true">1</span>
+                <div>
+                  <p class="step-title">Create a token</p>
+                  <p class="step-text">
+                    Run <code>claude setup-token</code> in a terminal, then
+                    paste the token.
+                  </p>
+                  <button
+                    type="button"
+                    class="button small copy"
+                    id="copy-command"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+                      <path
+                        d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"
+                      />
+                    </svg>
+                    Copy command
+                  </button>
+                </div>
+              </li>
+              <li class="step">
+                <span class="step-index" aria-hidden="true">2</span>
+                <div>
+                  <p class="step-title">Choose tasks</p>
+                  <p class="step-text">
+                    Open an organization or repository below, add your Claude
+                    token, choose what Claude should do, and enrol.
+                  </p>
+                </div>
+              </li>
+              <li class="step">
+                <span class="step-index" aria-hidden="true">3</span>
+                <div>
+                  <p class="step-title">Open a pull request</p>
+                  <p class="step-text">
+                    The claude-pr-owner workflow reads your settings on the next
+                    event.
+                  </p>
+                </div>
+              </li>
+            </ol>
+          </section>
+
+          <section
+            class="group"
+            id="organizations"
+            aria-labelledby="organizations-heading"
+            hidden
+          >
+            <div class="group-head">
+              <h2 id="organizations-heading">
+                Organizations
+                <span class="count" id="organization-count" hidden></span>
+              </h2>
+            </div>
+            <p class="group-note">
+              Defaults for your pull requests across an organization. Only
+              organization admins can change them.
+            </p>
+            <div class="list" id="organization-list"></div>
+            <div class="muted-note" id="organization-note" hidden></div>
+          </section>
+
+          <section class="group" aria-labelledby="repositories-heading">
+            <div class="group-head">
+              <h2 id="repositories-heading">
+                Repositories
+                <span class="count" id="repository-count" hidden></span>
+              </h2>
+              <a class="link" id="install-link" hidden>
+                Install ureview on more repositories
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M6 3.5h6.5V10M12.5 3.5 4 12" />
+                </svg>
+              </a>
+            </div>
+            <p class="group-note">
+              Repositories where ureview is installed and you have push access.
+              Open one to load its settings.
+            </p>
+            <div class="filter" id="repository-filter-field" hidden>
+              <label class="visually-hidden" for="repository-filter"
+                >Filter repositories</label
+              >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.5" />
+                <path d="m10.5 10.5 3 3" />
+              </svg>
+              <input
+                class="input"
+                type="search"
+                id="repository-filter"
+                placeholder="Filter by owner or name"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+              />
+            </div>
+            <div class="list compact" id="repository-list"></div>
+            <p
+              class="no-match"
+              id="repository-no-match"
+              role="status"
+              hidden
+            ></p>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="page-footer">
+      <div class="shell">
+        <span
+          >ureview stores settings as GitHub Actions variables and secrets. It
+          never reads your tokens back.</span
+        >
+        <a
+          href="https://github.com/abnegate/claude-pr-owner#per-user-mode"
+          rel="noopener noreferrer"
+          >How per-user mode works</a
+        >
+      </div>
+    </footer>
+
+    <p class="toast" id="toast" role="status" hidden></p>
+
+    <noscript><p class="shell">ureview needs JavaScript enabled.</p></noscript>
+
+    <template id="card-template">
+      <details class="card">
+        <summary class="card-summary">
+          <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M6 3.5 10.5 8 6 12.5" />
+          </svg>
+          <span class="card-title mono" data-part="title"></span>
+          <span class="card-tags">
+            <span class="badge" data-part="badge" hidden></span>
+            <span class="badge warning" data-part="token-warning" hidden
+              >No Claude token</span
+            >
+          </span>
+          <span class="card-meta" data-part="meta"></span>
+        </summary>
+        <div class="card-body" data-part="body"></div>
+      </details>
+    </template>
+
+    <template id="settings-template">
+      <form class="section" data-part="tokens" novalidate>
+        <div class="section-head">
+          <div class="field-head">
+            <h3 class="label">Tokens</h3>
+            <span class="chip" data-part="api-key-chip" hidden></span>
+          </div>
+          <p class="hint">
+            Saved as encrypted GitHub Actions secrets. They cannot be read back,
+            only replaced.
+          </p>
+        </div>
+        <div class="notes">
+          <p class="card-note warning" data-part="token-note" hidden>
+            No Claude token is set here. Without one, the workflow fails
+            whenever one of your tasks applies.
+          </p>
+        </div>
+        <div class="token-grid">
+          <div class="field">
+            <div class="field-head">
+              <label class="label" data-for="oauth">Claude token</label>
+              <span
+                class="chip"
+                data-part="oauth-chip"
+                data-id="oauth-chip"
+              ></span>
+            </div>
+            <input
+              class="input"
+              type="password"
+              name="oauth"
+              placeholder="Paste the claude setup-token output"
+              autocomplete="new-password"
+              autocapitalize="off"
+              spellcheck="false"
+              data-describe="oauth-chip oauth-hint"
+            />
+            <p class="hint" data-id="oauth-hint">
+              Run <code>claude setup-token</code> in a terminal, then paste the
+              token.
+            </p>
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label class="label" data-for="push"
+                >Push PAT<span class="optional">optional</span></label
+              >
+              <span
+                class="chip"
+                data-part="push-chip"
+                data-id="push-chip"
+              ></span>
+            </div>
+            <input
+              class="input"
+              type="password"
+              name="push"
+              placeholder="github_pat_…"
+              autocomplete="new-password"
+              autocapitalize="off"
+              spellcheck="false"
+              data-describe="push-chip push-hint"
+            />
+            <p class="hint" data-id="push-hint">
+              Contents write access, so CI runs on the commits Claude pushes.
+              Without it Claude pushes with GITHUB_TOKEN.
+            </p>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit" class="button">Save tokens</button>
+          <p class="status" role="status" data-part="tokens-status"></p>
+        </div>
+      </form>
+      <form class="section" data-part="settings" novalidate>
+        <div class="notes">
+          <p class="card-note" data-part="note" hidden></p>
+        </div>
+        <div class="settings-grid">
+          <fieldset>
+            <legend class="label">Tasks</legend>
+            <p class="hint spaced">
+              Default leaves a task to the workflow's own inputs.
+            </p>
+            <div class="flags" data-part="flags"></div>
+          </fieldset>
+          <div class="side">
+            <fieldset>
+              <legend class="label">Alert levels</legend>
+              <div class="checks" data-part="severities"></div>
+              <p class="hint spaced">
+                Findings Claude addresses when it reviews or improves. Default
+                uses the workflow's levels.
+              </p>
+            </fieldset>
+            <div class="field">
+              <label class="label" data-for="model">Model</label>
+              <input
+                class="input"
+                type="text"
+                name="model"
+                placeholder="Workflow default"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                data-describe="model-hint"
+              />
+              <p class="hint" data-id="model-hint">
+                A model id. Leave empty to use the workflow's model.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit" class="button primary" data-part="submit">
+            Save settings
+          </button>
+          <p class="status" role="status" data-part="settings-status"></p>
+        </div>
+      </form>
+      <div class="card-foot">
+        <p class="names mono" data-part="names"></p>
+        <div class="foot-actions">
+          <p class="status" role="status" data-part="remove-status"></p>
+          <button type="button" class="button danger small" data-part="remove">
+            Unenrol
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <script type="module">
+      const FLAGS = [
+        {
+          name: 'review',
+          title: 'Review',
+          hint: 'Posts inline review comments on each push. Never commits.',
+        },
+        {
+          name: 'comments',
+          title: 'Comments',
+          hint: 'Acts on @claude mentions from trusted collaborators.',
+        },
+        {
+          name: 'improvement',
+          title: 'Improvement',
+          hint: 'Reviews each push and commits fixes for its findings.',
+        },
+        {
+          name: 'healing',
+          title: 'Healing',
+          hint: 'Diagnoses failed CI runs and pushes a fix.',
+        },
+        {
+          name: 'bots',
+          title: 'Bots',
+          hint: 'Triages CodeRabbit, Greptile, Copilot and Codex reviews.',
+        },
+      ];
+
+      const SEVERITIES = [
+        { name: 'critical', title: 'Critical' },
+        { name: 'high', title: 'High' },
+        { name: 'medium', title: 'Medium' },
+        { name: 'low', title: 'Low' },
+      ];
+
+      const CHOICES = Object.freeze({
+        on: 'On',
+        off: 'Off',
+        default: 'Default',
+      });
+
+      const CHOICE_ORDER = ['default', 'on', 'off'];
+
+      const ENROLMENT = Object.freeze({
+        review: true,
+        comments: true,
+        improvement: false,
+        healing: false,
+        bots: false,
+      });
+
+      const MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9]+\])?$/;
+      const AVATAR = 'https://avatars.githubusercontent.com/';
+      const INSTALL = 'https://github.com/';
+      const STATUS_DURATION = 5000;
+      const TOAST_DURATION = 3200;
+      const SECOND = 1000;
+
+      const TOKEN_KINDS = ['oauth', 'push'];
+      const TOKEN_NAMES = Object.freeze({
+        oauth: 'Claude token',
+        push: 'push token',
+      });
+
+      const TOKEN_STATES = Object.freeze({
+        set: { text: 'Set', className: 'chip set' },
+        inherited: { text: 'Set in organization', className: 'chip inherited' },
+        missing: { text: 'Not set', className: 'chip' },
+        unknown: { text: 'Unknown', className: 'chip unknown' },
+      });
+
+      const API_KEY_STATES = Object.freeze({
+        set: { text: 'API key set', className: 'chip set' },
+        inherited: {
+          text: 'API key set in organization',
+          className: 'chip inherited',
+        },
+      });
+
+      const SIGNIN_NOTICES = new Map([
+        [
+          'cancelled',
+          'Sign-in was cancelled. Sign in with GitHub whenever you are ready.',
+        ],
+      ]);
+
+      const VIEWS = ['loading', 'signed-out', 'unconfigured', 'failure', 'app'];
+
+      const byId = (id) => document.getElementById(id);
+
+      const page = {
+        account: byId('account'),
+        avatar: byId('avatar'),
+        avatarFallback: byId('avatar-fallback'),
+        login: byId('account-login'),
+        signOut: byId('sign-out'),
+        signedOutHeading: byId('signed-out-heading'),
+        signedOutNotice: byId('signed-out-notice'),
+        failureMessage: byId('failure-message'),
+        retry: byId('retry'),
+        copyCommand: byId('copy-command'),
+        installLink: byId('install-link'),
+        repositoryCount: byId('repository-count'),
+        repositoryFilterField: byId('repository-filter-field'),
+        repositoryFilter: byId('repository-filter'),
+        repositoryList: byId('repository-list'),
+        repositoryNoMatch: byId('repository-no-match'),
+        organizations: byId('organizations'),
+        organizationCount: byId('organization-count'),
+        organizationList: byId('organization-list'),
+        organizationNote: byId('organization-note'),
+        card: byId('card-template'),
+        settings: byId('settings-template'),
+        toast: byId('toast'),
+      };
+
+      const state = {
+        user: null,
+        repositories: [],
+        sequence: 0,
+        notice: takeSigninNotice(),
+      };
+
+      const timers = new WeakMap();
+
+      class RequestError extends Error {
+        constructor(
+          status,
+          code,
+          detail = '',
+          retryAfter = null,
+          {
+            rolledBack = [],
+            rollbackFailed = [],
+            tokensWritten = [],
+            uncertain = false,
+          } = {},
+        ) {
+          super(detail || code || `Request failed with status ${status}`);
+          this.name = 'RequestError';
+          this.status = status;
+          this.code = code;
+          this.detail = detail;
+          this.retryAfter = retryAfter;
+          this.rolledBack = rolledBack;
+          this.rollbackFailed = rollbackFailed;
+          this.tokensWritten = tokensWritten;
+          this.uncertain = uncertain;
+        }
+      }
+
+      class FieldError extends Error {
+        constructor(message, input) {
+          super(message);
+          this.name = 'FieldError';
+          this.input = input;
+        }
+      }
+
+      function takeSigninNotice() {
+        const url = new URL(window.location.href);
+        const reason = url.searchParams.get('signin');
+        if (reason === null) {
+          return '';
+        }
+        url.searchParams.delete('signin');
+        window.history.replaceState(
+          window.history.state,
+          '',
+          `${url.pathname}${url.search}${url.hash}`,
+        );
+        return SIGNIN_NOTICES.get(reason) ?? '';
+      }
+
+      async function readJson(response) {
+        if (response.status === 204) {
+          return null;
+        }
+        try {
+          return await response.json();
+        } catch {
+          return null;
+        }
+      }
+
+      function retryAfterOf(data, response) {
+        const seconds = Number(
+          data?.retryAfter ?? response.headers.get('retry-after'),
+        );
+        return Number.isFinite(seconds) && seconds > 0
+          ? Math.ceil(seconds)
+          : null;
+      }
+
+      async function request(method, path, body) {
+        let response;
+        try {
+          response = await fetch(path, {
+            method,
+            credentials: 'same-origin',
+            headers: {
+              'content-type': 'application/json',
+              accept: 'application/json',
+            },
+            body: body === undefined ? undefined : JSON.stringify(body),
+          });
+        } catch {
+          throw new RequestError(0, 'network');
+        }
+        const data = await readJson(response);
+        if (response.ok) {
+          return data;
+        }
+        const code = typeof data?.error === 'string' ? data.error : '';
+        const detail = typeof data?.message === 'string' ? data.message : '';
+        if (response.status === 401 && path !== '/api/me') {
+          expire();
+        }
+        throw new RequestError(
+          response.status,
+          code,
+          detail,
+          retryAfterOf(data, response),
+          {
+            rolledBack: tokenKinds(data?.rolledBack),
+            rollbackFailed: tokenKinds(data?.rollbackFailed),
+            tokensWritten: tokenKinds(data?.tokensWritten),
+            uncertain: data?.uncertain === true,
+          },
+        );
+      }
+
+      function tokenKinds(value) {
+        return Array.isArray(value)
+          ? value.filter((kind) => TOKEN_KINDS.includes(kind))
+          : [];
+      }
+
+      function element(
+        tag,
+        { className, text, attributes = {} } = {},
+        children = [],
+      ) {
+        const node = document.createElement(tag);
+        if (className !== undefined) {
+          node.className = className;
+        }
+        if (text !== undefined) {
+          node.textContent = text;
+        }
+        for (const [name, value] of Object.entries(attributes)) {
+          node.setAttribute(name, value);
+        }
+        node.append(...children);
+        return node;
+      }
+
+      function show(view) {
+        for (const name of VIEWS) {
+          byId(`view-${name}`).hidden = name !== view;
+        }
+      }
+
+      function toast(message) {
+        page.toast.textContent = message;
+        page.toast.hidden = false;
+        clearTimeout(timers.get(page.toast));
+        timers.set(
+          page.toast,
+          setTimeout(() => {
+            page.toast.hidden = true;
+          }, TOAST_DURATION),
+        );
+      }
+
+      function setStatus(node, kind, message) {
+        clearTimeout(timers.get(node));
+        node.className = kind === '' ? 'status' : `status ${kind}`;
+        node.textContent = message;
+        if (kind === 'success') {
+          timers.set(
+            node,
+            setTimeout(() => {
+              node.textContent = '';
+              node.className = 'status';
+            }, STATUS_DURATION),
+          );
+        }
+      }
+
+      function setBusy(button, busy, label) {
+        if (busy) {
+          button.dataset.label = button.textContent;
+          button.textContent = label;
+          button.disabled = true;
+          button.setAttribute('aria-busy', 'true');
+          return;
+        }
+        button.textContent = button.dataset.label ?? button.textContent;
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+      }
+
+      function loginKey(login) {
+        return login.toUpperCase().replaceAll('-', '_');
+      }
+
+      function wait(seconds) {
+        return seconds < 90 ? `${seconds} s` : `${Math.ceil(seconds / 60)} min`;
+      }
+
+      function listNames(names) {
+        return new Intl.ListFormat('en', { type: 'conjunction' }).format(names);
+      }
+
+      function describe(error, target) {
+        const organization = target?.kind === 'organization';
+        switch (error.code) {
+          case 'network':
+            return 'Could not reach ureview. Check your connection and try again.';
+          case 'forbidden':
+            return organization
+              ? 'GitHub refused the request. Only organization admins can change organization settings.'
+              : 'GitHub refused the request. You need push access to this repository.';
+          case 'not_found':
+            return organization
+              ? 'ureview is no longer installed on this organization.'
+              : 'ureview is no longer installed on this repository.';
+          case 'rate_limited':
+            return error.retryAfter === null
+              ? 'GitHub rate limit reached. Try again in a few minutes.'
+              : `GitHub rate limit reached. Retry in ${wait(error.retryAfter)}.`;
+          case 'github_app':
+            return "ureview's GitHub App credentials were rejected. Contact the ureview admin.";
+          case 'invalid':
+            return (
+              error.detail ||
+              'Those values were rejected. Check them and try again.'
+            );
+          case 'invalid_json':
+            return 'The request could not be read. Reload the page and try again.';
+          case 'origin':
+            return 'The request was blocked because it did not come from this page. Reload and try again.';
+          case 'github':
+            return 'GitHub returned an unexpected error. Try again in a moment.';
+          case 'unconfigured':
+            return 'ureview is not configured yet.';
+          case 'unauthenticated':
+            return 'Your session expired. Sign in again.';
+          default:
+            return `Something went wrong (status ${error.status}). Try again in a moment.`;
+        }
+      }
+
+      function isObject(value) {
+        return (
+          value !== null && typeof value === 'object' && !Array.isArray(value)
+        );
+      }
+
+      function normalizeConfig(value) {
+        if (!isObject(value)) {
+          return null;
+        }
+        const config = {};
+        for (const flag of FLAGS) {
+          if (typeof value[flag.name] === 'boolean') {
+            config[flag.name] = value[flag.name];
+          }
+        }
+        if (typeof value.severities === 'string' && value.severities !== '') {
+          config.severities = value.severities;
+        }
+        if (typeof value.model === 'string' && value.model !== '') {
+          config.model = value.model;
+        }
+        return config;
+      }
+
+      function normalizeSecrets(value) {
+        return {
+          oauth: value?.oauth === true,
+          push: value?.push === true,
+          apiKey: value?.apiKey === true,
+        };
+      }
+
+      function applyStatus(target, data) {
+        target.config = normalizeConfig(data?.config);
+        target.secrets = normalizeSecrets(data?.secrets);
+        if (target.kind === 'repository') {
+          target.inherited = {
+            config: normalizeConfig(data?.inherited?.config),
+            secrets: normalizeSecrets(data?.inherited?.secrets),
+          };
+        }
+        target.loaded = true;
+      }
+
+      function repositoryTarget(item) {
+        const label =
+          typeof item.fullName === 'string'
+            ? item.fullName
+            : `${item.owner}/${item.name}`;
+        return {
+          kind: 'repository',
+          owner: item.owner,
+          name: item.name,
+          label,
+          search: label.toLowerCase(),
+          path: `/api/repositories/${encodeURIComponent(item.owner)}/${encodeURIComponent(item.name)}`,
+          loaded: false,
+          loading: false,
+          config: null,
+          secrets: normalizeSecrets(null),
+          inherited: { config: null, secrets: normalizeSecrets(null) },
+          dirty: false,
+          prefix: '',
+          view: null,
+        };
+      }
+
+      function organizationTarget(item) {
+        const login = String(item.login ?? '');
+        const target = {
+          kind: 'organization',
+          owner: login,
+          name: login,
+          label: login,
+          search: login.toLowerCase(),
+          path: `/api/organizations/${encodeURIComponent(login)}`,
+          loaded: false,
+          loading: false,
+          config: null,
+          secrets: normalizeSecrets(null),
+          inherited: null,
+          dirty: false,
+          prefix: '',
+          view: null,
+        };
+        applyStatus(target, item);
+        return target;
+      }
+
+      function effectiveConfig(target) {
+        return target.config ?? target.inherited?.config ?? null;
+      }
+
+      function tokenState(target, key) {
+        const own = target.secrets[key];
+        const inherited = target.inherited?.secrets[key];
+        if (own === true) {
+          return 'set';
+        }
+        if (own === null) {
+          return 'unknown';
+        }
+        if (inherited === true) {
+          return 'inherited';
+        }
+        if (inherited === null) {
+          return 'unknown';
+        }
+        return 'missing';
+      }
+
+      function choiceOf(config, name) {
+        if (config[name] === true) {
+          return 'on';
+        }
+        if (config[name] === false) {
+          return 'off';
+        }
+        return 'default';
+      }
+
+      function part(root, name) {
+        return root.querySelector(`[data-part="${name}"]`);
+      }
+
+      function renderTitle(target, node) {
+        if (target.kind === 'organization') {
+          node.append(
+            element('span', {
+              className: 'card-title-name',
+              text: target.label,
+            }),
+          );
+          return;
+        }
+        const [owner, ...rest] = target.label.split('/');
+        node.append(
+          element('span', { className: 'card-title-owner', text: owner }),
+          element('span', {
+            className: 'card-title-separator',
+            text: '/',
+            attributes: { 'aria-hidden': 'true' },
+          }),
+          element('span', {
+            className: 'card-title-name',
+            text: rest.join('/'),
+          }),
+        );
+      }
+
+      function renderFlags(container, prefix) {
+        for (const flag of FLAGS) {
+          const id = `${prefix}-${flag.name}`;
+          const segments = CHOICE_ORDER.map((choice) =>
+            element('label', { className: 'segment' }, [
+              element('input', {
+                attributes: { type: 'radio', name: flag.name, value: choice },
+              }),
+              element('span', {
+                className: 'segment-face',
+                text: CHOICES[choice],
+              }),
+            ]),
+          );
+          container.append(
+            element('div', { className: 'flag-row' }, [
+              element('span', {}, [
+                element('span', {
+                  className: 'flag-name',
+                  text: flag.title,
+                  attributes: { id: `${id}-name` },
+                }),
+                element('span', {
+                  className: 'flag-hint',
+                  text: flag.hint,
+                  attributes: { id: `${id}-hint` },
+                }),
+              ]),
+              element(
+                'div',
+                {
+                  className: 'segmented',
+                  attributes: {
+                    role: 'radiogroup',
+                    'aria-labelledby': `${id}-name`,
+                    'aria-describedby': `${id}-hint`,
+                  },
+                },
+                segments,
+              ),
+            ]),
+          );
+        }
+      }
+
+      function check(name, value, title, dot) {
+        const face =
+          dot === null
+            ? [title]
+            : [
+                element('span', {
+                  className: `dot ${dot}`,
+                  attributes: { 'aria-hidden': 'true' },
+                }),
+                title,
+              ];
+        return element('label', { className: 'check' }, [
+          element('input', { attributes: { type: 'checkbox', name, value } }),
+          element('span', { className: 'check-face' }, face),
+        ]);
+      }
+
+      function renderSeverities(container) {
+        container.append(
+          check('severity-default', 'default', 'Default', null),
+          ...SEVERITIES.map((severity) =>
+            check('severity', severity.name, severity.title, severity.name),
+          ),
+        );
+      }
+
+      function syncSeverities(form, changed) {
+        const fallback = form.elements.namedItem('severity-default');
+        const levels = [...form.querySelectorAll('input[name="severity"]')];
+        if (changed === fallback && fallback.checked) {
+          for (const level of levels) {
+            level.checked = false;
+          }
+          return;
+        }
+        if (changed === fallback || levels.includes(changed)) {
+          fallback.checked = !levels.some((level) => level.checked);
+        }
+      }
+
+      function linkFields(root, prefix) {
+        for (const node of root.querySelectorAll('[data-id]')) {
+          node.id = `${prefix}-${node.dataset.id}`;
+        }
+        for (const label of root.querySelectorAll('label[data-for]')) {
+          const input = label
+            .closest('form')
+            .elements.namedItem(label.dataset.for);
+          input.id = `${prefix}-${label.dataset.for}`;
+          label.htmlFor = input.id;
+        }
+        for (const input of root.querySelectorAll('[data-describe]')) {
+          const ids = input.dataset.describe
+            .split(' ')
+            .map((name) => `${prefix}-${name}`);
+          input.setAttribute('aria-describedby', ids.join(' '));
+        }
+      }
+
+      function renderNames(target, node) {
+        const key = loginKey(state.user.login);
+        const scope =
+          target.kind === 'organization' ? 'Organization' : 'Repository';
+        const group = (label, names) =>
+          element('span', { className: 'names-group' }, [
+            element('span', { className: 'names-label', text: label }),
+            ...names.map((name) => element('span', { text: name })),
+          ]);
+        node.append(
+          group(`${scope} variable`, [`UREVIEW_${key}`]),
+          group(`${scope} secrets`, [
+            `UREVIEW_OAUTH_TOKEN_${key}`,
+            `UREVIEW_PUSH_TOKEN_${key}`,
+          ]),
+        );
+      }
+
+      function card(target) {
+        const root = page.card.content.firstElementChild.cloneNode(true);
+        target.prefix = `target-${++state.sequence}`;
+        target.view = {
+          root,
+          body: part(root, 'body'),
+          badge: part(root, 'badge'),
+          tokenWarning: part(root, 'token-warning'),
+          meta: part(root, 'meta'),
+        };
+        renderTitle(target, part(root, 'title'));
+        root.addEventListener('toggle', () => {
+          if (root.open) {
+            load(target);
+          }
+        });
+        if (target.loaded) {
+          mount(target);
+        }
+        return root;
+      }
+
+      function mount(target) {
+        const fragment = page.settings.content.cloneNode(true);
+        const view = target.view;
+        Object.assign(view, {
+          settings: part(fragment, 'settings'),
+          tokens: part(fragment, 'tokens'),
+          note: part(fragment, 'note'),
+          tokenNote: part(fragment, 'token-note'),
+          oauthChip: part(fragment, 'oauth-chip'),
+          pushChip: part(fragment, 'push-chip'),
+          apiKeyChip: part(fragment, 'api-key-chip'),
+          settingsStatus: part(fragment, 'settings-status'),
+          tokensStatus: part(fragment, 'tokens-status'),
+          removeStatus: part(fragment, 'remove-status'),
+          remove: part(fragment, 'remove'),
+          submit: part(fragment, 'submit'),
+        });
+        renderFlags(part(fragment, 'flags'), target.prefix);
+        renderSeverities(part(fragment, 'severities'));
+        renderNames(target, part(fragment, 'names'));
+        linkFields(fragment, target.prefix);
+
+        view.settings.addEventListener('input', () => {
+          target.dirty = true;
+        });
+        view.settings.addEventListener('change', (event) => {
+          syncSeverities(view.settings, event.target);
+        });
+        view.settings.addEventListener('submit', (event) => {
+          event.preventDefault();
+          saveSettings(target);
+        });
+        view.tokens.addEventListener('input', (event) => {
+          event.target.removeAttribute('aria-invalid');
+        });
+        view.tokens.addEventListener('submit', (event) => {
+          event.preventDefault();
+          saveTokens(target);
+        });
+        view.remove.addEventListener('click', () => remove(target));
+
+        view.body.replaceChildren(fragment);
+        renderSummary(target);
+        fillSettings(target);
+      }
+
+      async function load(target) {
+        if (target.loaded || target.loading) {
+          return;
+        }
+        target.loading = true;
+        const body = target.view.body;
+        body.replaceChildren(
+          element(
+            'p',
+            { className: 'card-loading', attributes: { role: 'status' } },
+            [
+              element('span', {
+                className: 'spinner',
+                attributes: { 'aria-hidden': 'true' },
+              }),
+              'Loading settings',
+            ],
+          ),
+        );
+        try {
+          applyStatus(target, await request('GET', target.path));
+          mount(target);
+        } catch (error) {
+          if (!(error instanceof RequestError)) {
+            throw error;
+          }
+          if (error.status !== 401) {
+            body.replaceChildren(
+              element('div', { className: 'section' }, [
+                failure(error, () => load(target), target),
+              ]),
+            );
+          }
+        } finally {
+          target.loading = false;
+        }
+      }
+
+      function metaItems(config) {
+        const groups = { on: [], off: [], default: [] };
+        for (const flag of FLAGS) {
+          groups[choiceOf(config, flag.name)].push(flag.name);
+        }
+        const items = ['on', 'off', 'default']
+          .filter((choice) => groups[choice].length > 0)
+          .map((choice) => `${choice}: ${groups[choice].join(', ')}`);
+        items.push(
+          `alerts: ${config.severities?.replaceAll(',', ', ') ?? 'default'}`,
+          `model: ${config.model ?? 'default'}`,
+        );
+        return items;
+      }
+
+      function noteFor(target) {
+        if (target.kind === 'organization') {
+          return `Applies to your pull requests in every ${target.label} repository where you have no repository settings.`;
+        }
+        if (target.config === null && target.inherited.config !== null) {
+          return `Using your ${target.owner} organization settings. Saving here creates repository settings that replace them.`;
+        }
+        if (target.config === null) {
+          return 'Claude does not run on your pull requests here yet. Add a Claude token above, choose tasks, then enrol.';
+        }
+        return '';
+      }
+
+      function submitLabel(target) {
+        return effectiveConfig(target) === null ? 'Enrol' : 'Save settings';
+      }
+
+      function renderSubmit(target) {
+        const button = target.view.submit;
+        if (button.getAttribute('aria-busy') !== 'true') {
+          button.textContent = submitLabel(target);
+        }
+      }
+
+      function renderBadge(target) {
+        const badge = target.view.badge;
+        badge.hidden = false;
+        if (target.config !== null) {
+          badge.className = 'badge enrolled';
+          badge.textContent = 'Enrolled';
+        } else if (target.inherited?.config) {
+          badge.className = 'badge inherited';
+          badge.textContent = 'Inherited from organization';
+        } else {
+          badge.className = 'badge none';
+          badge.textContent = 'Not enrolled';
+        }
+      }
+
+      function renderSummary(target) {
+        const view = target.view;
+        const config = effectiveConfig(target);
+        const oauth = tokenState(target, 'oauth');
+        const push = tokenState(target, 'push');
+        const missingToken = config !== null && oauth === 'missing';
+
+        renderBadge(target);
+        view.tokenWarning.hidden = !missingToken;
+        view.meta.replaceChildren(
+          ...(config === null
+            ? []
+            : [
+                element(
+                  'span',
+                  { className: 'meta-line' },
+                  metaItems(config).map((text) => element('span', { text })),
+                ),
+              ]),
+        );
+
+        for (const [chip, key] of [
+          [view.oauthChip, oauth],
+          [view.pushChip, push],
+        ]) {
+          chip.className = TOKEN_STATES[key].className;
+          chip.textContent = TOKEN_STATES[key].text;
+        }
+        const apiKey = API_KEY_STATES[tokenState(target, 'apiKey')];
+        view.apiKeyChip.hidden = apiKey === undefined;
+        if (apiKey !== undefined) {
+          view.apiKeyChip.className = apiKey.className;
+          view.apiKeyChip.textContent = apiKey.text;
+        }
+
+        const note = noteFor(target);
+        view.note.hidden = note === '';
+        view.note.textContent = note;
+        view.tokenNote.hidden = !missingToken;
+        view.remove.hidden =
+          target.config === null &&
+          target.secrets.oauth === false &&
+          target.secrets.push === false;
+        renderSubmit(target);
+      }
+
+      function fillSettings(target) {
+        const config = effectiveConfig(target) ?? ENROLMENT;
+        const form = target.view.settings;
+        for (const flag of FLAGS) {
+          form.elements.namedItem(flag.name).value = choiceOf(
+            config,
+            flag.name,
+          );
+        }
+        const severities = new Set(
+          (config.severities ?? '').split(',').filter(Boolean),
+        );
+        for (const input of form.querySelectorAll('input[name="severity"]')) {
+          input.checked = severities.has(input.value);
+        }
+        form.elements.namedItem('severity-default').checked =
+          severities.size === 0;
+        const model = form.elements.namedItem('model');
+        model.value = config.model ?? '';
+        model.removeAttribute('aria-invalid');
+        target.dirty = false;
+      }
+
+      function readSettings(form) {
+        const body = {};
+        for (const flag of FLAGS) {
+          const choice = form.elements.namedItem(flag.name).value;
+          if (choice !== 'default') {
+            body[flag.name] = choice === 'on';
+          }
+        }
+        const severities = [
+          ...form.querySelectorAll('input[name="severity"]:checked'),
+        ].map((input) => input.value);
+        if (severities.length > 0) {
+          body.severities = severities.join(',');
+        }
+        const modelInput = form.elements.namedItem('model');
+        const model = modelInput.value.trim();
+        if (model !== '' && !MODEL.test(model)) {
+          throw new FieldError(
+            'A model id starts with a letter or digit, uses only letters, digits, dots, dashes and underscores, and may end with a bracketed suffix such as [1m].',
+            modelInput,
+          );
+        }
+        if (model !== '') {
+          body.model = model;
+        }
+        return body;
+      }
+
+      function readTokens(form) {
+        const tokens = {};
+        for (const name of TOKEN_KINDS) {
+          const value = form.elements.namedItem(name).value.replace(/\s+/g, '');
+          if (value !== '') {
+            tokens[name] = value;
+          }
+        }
+        return tokens;
+      }
+
+      function requireToken(target, tokens) {
+        if (
+          target.config !== null ||
+          tokens.oauth !== undefined ||
+          tokenState(target, 'oauth') !== 'missing'
+        ) {
+          return;
+        }
+        throw new FieldError(
+          'Paste a Claude token above first. Claude cannot run here without one.',
+          target.view.tokens.elements.namedItem('oauth'),
+        );
+      }
+
+      function reportFieldError(error, status) {
+        if (error.input.type !== 'checkbox') {
+          error.input.setAttribute('aria-invalid', 'true');
+        }
+        error.input.focus();
+        setStatus(status, 'error', error.message);
+      }
+
+      function savedTokensMessage(tokens) {
+        if (tokens.oauth !== undefined && tokens.push !== undefined) {
+          return 'Claude token and push PAT saved.';
+        }
+        return tokens.oauth !== undefined
+          ? 'Claude token saved.'
+          : 'Push PAT saved.';
+      }
+
+      function applyTokens(target, tokens) {
+        target.view.tokens.reset();
+        target.secrets = {
+          ...target.secrets,
+          oauth: tokens.oauth !== undefined || target.secrets.oauth,
+          push: tokens.push !== undefined || target.secrets.push,
+        };
+        renderSummary(target);
+      }
+
+      function reportRequestError(error, status, target) {
+        if (!(error instanceof RequestError)) {
+          throw error;
+        }
+        if (error.status !== 401) {
+          setStatus(status, 'error', describe(error, target));
+        }
+      }
+
+      async function saveSettings(target) {
+        const view = target.view;
+        view.settings.elements
+          .namedItem('model')
+          .removeAttribute('aria-invalid');
+        let config;
+        let tokens;
+        try {
+          config = readSettings(view.settings);
+          tokens = readTokens(view.tokens);
+          requireToken(target, tokens);
+        } catch (error) {
+          if (error instanceof FieldError) {
+            reportFieldError(error, view.settingsStatus);
+            return;
+          }
+          throw error;
+        }
+        const enrolling = target.config === null;
+        setStatus(view.settingsStatus, '', '');
+        setBusy(view.submit, true, 'Saving…');
+        try {
+          if (enrolling || Object.keys(tokens).length > 0) {
+            await enrol(target, config, tokens, enrolling);
+          } else {
+            await updateSettings(target, config);
+          }
+        } finally {
+          setBusy(view.submit, false);
+          renderSubmit(target);
+        }
+      }
+
+      async function updateSettings(target, config) {
+        const status = target.view.settingsStatus;
+        try {
+          const data = await request('PUT', `${target.path}/config`, config);
+          target.config =
+            normalizeConfig(data?.config) ?? normalizeConfig(config);
+          renderSummary(target);
+          fillSettings(target);
+          setStatus(status, 'success', 'Settings saved.');
+          propagate(target);
+        } catch (error) {
+          reportRequestError(error, status, target);
+        }
+      }
+
+      async function enrol(target, config, tokens, enrolling) {
+        const view = target.view;
+        let data;
+        try {
+          data = await request('PUT', `${target.path}/enrolment`, {
+            config,
+            tokens,
+          });
+        } catch (error) {
+          if (!(error instanceof RequestError)) {
+            throw error;
+          }
+          if (error.status !== 401) {
+            await reconcile(
+              target,
+              tokens,
+              enrolmentFailure(error, target, tokens),
+            );
+          }
+          return;
+        }
+        view.tokens.reset();
+        target.config =
+          normalizeConfig(data?.config) ?? normalizeConfig(config);
+        target.secrets = normalizeSecrets(data?.secrets);
+        renderSummary(target);
+        fillSettings(target);
+        setStatus(
+          view.settingsStatus,
+          'success',
+          enrolling
+            ? 'Enrolled.'
+            : `${savedTokensMessage(tokens)} Settings saved.`,
+        );
+        propagate(target);
+      }
+
+      function enrolmentFailure(error, target, tokens) {
+        const reason = describe(error, target);
+        if (error.uncertain) {
+          return `${reason} Enrolment may have partly succeeded. Reload to check.`;
+        }
+        if (error.rollbackFailed.length > 0) {
+          return `${reason} Enrolment failed and the new token could not be removed. Unenrol to delete it.`;
+        }
+        const replaced = error.tokensWritten.filter(
+          (kind) => target.secrets[kind] === true,
+        );
+        if (replaced.length > 0) {
+          return `${reason} ${replacedTokensMessage(replaced)}`;
+        }
+        if (error.rolledBack.length === 0) {
+          return reason;
+        }
+        return error.rolledBack.length === Object.keys(tokens).length
+          ? `${reason} Enrolment failed. Nothing was saved.`
+          : `${reason} Enrolment failed and the new token was removed. Your existing token may now hold the value you pasted.`;
+      }
+
+      function replacedTokensMessage(kinds) {
+        const names = listNames(kinds.map((kind) => TOKEN_NAMES[kind]));
+        return kinds.length === 1
+          ? `Enrolment failed, but your pasted ${names} was saved and replaced the previous one.`
+          : `Enrolment failed, but your pasted ${names} were saved and replaced the previous ones.`;
+      }
+
+      async function reconcile(target, tokens, message) {
+        const status = target.view.settingsStatus;
+        try {
+          applyStatus(target, await request('GET', target.path));
+        } catch (failure) {
+          if (!(failure instanceof RequestError)) {
+            throw failure;
+          }
+          target.secrets = {
+            ...target.secrets,
+            ...Object.fromEntries(
+              Object.keys(tokens).map((key) => [key, null]),
+            ),
+          };
+          renderSummary(target);
+          propagate(target);
+          if (failure.status !== 401) {
+            setStatus(
+              status,
+              'error',
+              `${message} ureview could not re-read your settings. Reload the page to see what is saved.`,
+            );
+          }
+          return;
+        }
+        renderSummary(target);
+        propagate(target);
+        setStatus(status, 'error', message);
+      }
+
+      async function saveTokens(target) {
+        const view = target.view;
+        const button = view.tokens.querySelector('button[type="submit"]');
+        const tokens = readTokens(view.tokens);
+        if (Object.keys(tokens).length === 0) {
+          reportFieldError(
+            new FieldError(
+              'Paste a Claude token or a push PAT first.',
+              view.tokens.elements.namedItem('oauth'),
+            ),
+            view.tokensStatus,
+          );
+          return;
+        }
+        setStatus(view.tokensStatus, '', '');
+        setBusy(button, true, 'Saving…');
+        try {
+          await request('PUT', `${target.path}/tokens`, tokens);
+          applyTokens(target, tokens);
+          setStatus(view.tokensStatus, 'success', savedTokensMessage(tokens));
+          propagate(target);
+        } catch (error) {
+          reportRequestError(error, view.tokensStatus, target);
+        } finally {
+          setBusy(button, false);
+        }
+      }
+
+      function removalQuestion(target) {
+        if (target.kind === 'organization') {
+          return `Unenrol from the ${target.label} organization? This deletes your organization-wide ureview settings and tokens. Repository settings stay in place.`;
+        }
+        const fallback =
+          target.inherited.config !== null
+            ? ` Your ${target.owner} organization settings will apply instead.`
+            : '';
+        return `Unenrol from ${target.label}? This deletes your ureview settings and tokens for this repository.${fallback}`;
+      }
+
+      async function remove(target) {
+        const view = target.view;
+        if (!window.confirm(removalQuestion(target))) {
+          return;
+        }
+        setStatus(view.removeStatus, '', '');
+        setBusy(view.remove, true, 'Removing…');
+        try {
+          await request('DELETE', target.path);
+          target.config = null;
+          target.secrets = normalizeSecrets(null);
+          view.tokens.reset();
+          renderSummary(target);
+          fillSettings(target);
+          setStatus(view.removeStatus, 'success', 'Unenrolled.');
+          view.submit.focus();
+          propagate(target);
+        } catch (error) {
+          reportRequestError(error, view.removeStatus, target);
+        } finally {
+          setBusy(view.remove, false);
+        }
+      }
+
+      function propagate(organization) {
+        if (organization.kind !== 'organization') {
+          return;
+        }
+        const login = organization.label.toLowerCase();
+        for (const repository of state.repositories) {
+          if (repository.owner.toLowerCase() !== login || !repository.loaded) {
+            continue;
+          }
+          repository.inherited = {
+            config: organization.config,
+            secrets: { ...organization.secrets },
+          };
+          renderSummary(repository);
+          if (repository.config === null && !repository.dirty) {
+            fillSettings(repository);
+          }
+        }
+      }
+
+      function skeletons(count) {
+        return Array.from({ length: count }, () =>
+          element('div', {
+            className: 'skeleton',
+            attributes: { 'aria-hidden': 'true' },
+          }),
+        );
+      }
+
+      function hold(button, seconds) {
+        if (seconds === null) {
+          return;
+        }
+        const until = Date.now() + seconds * SECOND;
+        const tick = () => {
+          const remaining = Math.ceil((until - Date.now()) / SECOND);
+          if (remaining <= 0 || !button.isConnected) {
+            button.disabled = false;
+            button.textContent = 'Try again';
+            return;
+          }
+          button.disabled = true;
+          button.textContent = `Try again in ${wait(remaining)}`;
+          timers.set(button, setTimeout(tick, SECOND));
+        };
+        button.disabled = true;
+        timers.set(button, setTimeout(tick, 0));
+      }
+
+      function failure(error, retry, target) {
+        const button = element('button', {
+          className: 'button small',
+          text: 'Try again',
+          attributes: { type: 'button' },
+        });
+        button.addEventListener('click', retry);
+        hold(button, error.retryAfter);
+        return element(
+          'div',
+          { className: 'inline-error', attributes: { role: 'alert' } },
+          [element('span', { text: describe(error, target) }), button],
+        );
+      }
+
+      function installUrl(value) {
+        return typeof value === 'string' && value.startsWith(INSTALL)
+          ? value
+          : null;
+      }
+
+      function emptyRepositories(install) {
+        const icon = document.createElementNS(
+          'http://www.w3.org/2000/svg',
+          'svg',
+        );
+        icon.setAttribute('viewBox', '0 0 24 24');
+        icon.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS(
+          'http://www.w3.org/2000/svg',
+          'path',
+        );
+        path.setAttribute(
+          'd',
+          'M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5v-13ZM4 9h16M9 13.5h6',
+        );
+        icon.append(path);
+        const children = [
+          icon,
+          element('h3', { text: 'No repositories yet' }),
+          element('p', {
+            text: 'ureview lists repositories where it is installed and you have push access. Install it on a repository you open pull requests against.',
+          }),
+        ];
+        if (install !== null) {
+          children.push(
+            element('a', {
+              className: 'button primary',
+              text: 'Install ureview on a repository',
+              attributes: { href: install, rel: 'noopener noreferrer' },
+            }),
+          );
+        }
+        return element('div', { className: 'empty' }, children);
+      }
+
+      function isRepository(item) {
+        return (
+          isObject(item) &&
+          typeof item.owner === 'string' &&
+          typeof item.name === 'string'
+        );
+      }
+
+      function filterRepositories() {
+        const text = page.repositoryFilter.value.trim();
+        const query = text.toLowerCase();
+        let visible = 0;
+        for (const target of state.repositories) {
+          const match = target.search.includes(query);
+          target.view.root.hidden = !match;
+          visible += match ? 1 : 0;
+        }
+        const total = state.repositories.length;
+        page.repositoryCount.textContent =
+          query === '' ? String(total) : `${visible} of ${total}`;
+        page.repositoryNoMatch.hidden = visible > 0;
+        page.repositoryNoMatch.textContent =
+          visible > 0 ? '' : `No repositories match “${text}”.`;
+      }
+
+      function renderRepositories(data) {
+        const items = Array.isArray(data?.repositories)
+          ? data.repositories.filter(isRepository)
+          : [];
+        const install = installUrl(data?.install);
+        state.repositories = items.map(repositoryTarget);
+        page.installLink.hidden = install === null || items.length === 0;
+        if (install !== null) {
+          page.installLink.href = install;
+        }
+        page.repositoryCount.hidden = false;
+        page.repositoryFilter.value = '';
+        page.repositoryFilterField.hidden = items.length < 2;
+        page.repositoryNoMatch.hidden = true;
+        if (items.length === 0) {
+          page.repositoryCount.textContent = '0';
+          page.repositoryList.replaceChildren(emptyRepositories(install));
+          return;
+        }
+        const cards = state.repositories.map(card);
+        page.repositoryList.replaceChildren(...cards);
+        filterRepositories();
+        if (cards.length === 1) {
+          cards[0].open = true;
+        }
+      }
+
+      function organizationNotes(others) {
+        const pending = others
+          .filter((item) => item.reason === 'permission')
+          .map((item) => String(item.login ?? ''));
+        const members = others
+          .filter((item) => item.reason !== 'permission')
+          .map((item) => String(item.login ?? ''));
+        const notes = [];
+        if (pending.length > 0) {
+          const scope =
+            pending.length === 1 ? 'that organization' : 'those organizations';
+          notes.push(
+            `ureview's installation on ${listNames(pending)} needs its organization permissions approved before you can manage organization settings. An owner of ${scope} approves the pending request in the organization's GitHub App settings.`,
+          );
+        }
+        if (members.length > 0) {
+          const pronoun = members.length === 1 ? 'its' : 'their';
+          notes.push(
+            `You are not an admin of ${listNames(members)}, so ${pronoun} organization settings are managed by ${pronoun} admins.`,
+          );
+        }
+        return notes.map((text) => element('p', { text }));
+      }
+
+      function renderOrganizations(data) {
+        const items = Array.isArray(data?.organizations)
+          ? data.organizations.filter(isObject)
+          : [];
+        const administered = items
+          .filter((item) => item.admin === true)
+          .map(organizationTarget);
+        const others = items.filter((item) => item.admin !== true);
+        page.organizations.hidden = items.length === 0;
+        page.organizationCount.hidden = administered.length === 0;
+        page.organizationCount.textContent = String(administered.length);
+        page.organizationList.hidden = administered.length === 0;
+        page.organizationList.replaceChildren(...administered.map(card));
+        page.organizationNote.hidden = others.length === 0;
+        page.organizationNote.replaceChildren(...organizationNotes(others));
+      }
+
+      async function loadRepositories() {
+        page.repositoryCount.hidden = true;
+        page.installLink.hidden = true;
+        page.repositoryFilterField.hidden = true;
+        page.repositoryNoMatch.hidden = true;
+        page.repositoryList.replaceChildren(...skeletons(3));
+        try {
+          renderRepositories(await request('GET', '/api/repositories'));
+        } catch (error) {
+          if (!(error instanceof RequestError)) {
+            throw error;
+          }
+          if (error.status !== 401) {
+            page.repositoryList.replaceChildren(
+              failure(error, loadRepositories),
+            );
+          }
+        }
+      }
+
+      async function loadOrganizations() {
+        page.organizations.hidden = false;
+        page.organizationList.hidden = false;
+        page.organizationNote.hidden = true;
+        page.organizationCount.hidden = true;
+        page.organizationList.replaceChildren(...skeletons(1));
+        try {
+          renderOrganizations(await request('GET', '/api/organizations'));
+        } catch (error) {
+          if (!(error instanceof RequestError)) {
+            throw error;
+          }
+          if (error.status !== 401) {
+            page.organizationList.replaceChildren(
+              failure(error, loadOrganizations, { kind: 'organization' }),
+            );
+          }
+        }
+      }
+
+      function renderAccount(user) {
+        page.login.textContent = user.login;
+        page.avatarFallback.textContent = user.login.slice(0, 1);
+        page.avatarFallback.hidden = false;
+        page.avatar.hidden = true;
+        page.avatar.removeAttribute('src');
+        if (typeof user.avatar === 'string' && user.avatar.startsWith(AVATAR)) {
+          page.avatar.src = user.avatar;
+        }
+        page.account.hidden = false;
+      }
+
+      function reset() {
+        state.user = null;
+        state.repositories = [];
+        page.account.hidden = true;
+        page.repositoryFilter.value = '';
+        page.repositoryFilterField.hidden = true;
+        page.repositoryNoMatch.hidden = true;
+        page.repositoryList.replaceChildren();
+        page.organizationList.replaceChildren();
+        page.organizationNote.replaceChildren();
+      }
+
+      function showSignedOut(message = '') {
+        reset();
+        page.signedOutNotice.hidden = message === '';
+        page.signedOutNotice.textContent = message;
+        show('signed-out');
+        if (message !== '') {
+          page.signedOutHeading.focus();
+        }
+      }
+
+      function expire() {
+        if (state.user !== null) {
+          showSignedOut('Your session expired. Sign in again to keep editing.');
+        }
+      }
+
+      function showFailure(error) {
+        page.failureMessage.textContent = describe(error);
+        show('failure');
+      }
+
+      async function boot() {
+        show('loading');
+        const notice = state.notice;
+        state.notice = '';
+        let user;
+        try {
+          user = await request('GET', '/api/me');
+        } catch (error) {
+          if (error.status === 401) {
+            showSignedOut(notice);
+          } else if (error.status === 503) {
+            show('unconfigured');
+          } else {
+            showFailure(error);
+          }
+          return;
+        }
+        if (!isObject(user) || typeof user.login !== 'string') {
+          showFailure(new RequestError(200, ''));
+          return;
+        }
+        state.user = { login: user.login, avatar: user.avatar };
+        renderAccount(state.user);
+        show('app');
+        await Promise.all([loadRepositories(), loadOrganizations()]);
+      }
+
+      page.avatar.addEventListener('load', () => {
+        page.avatar.hidden = false;
+        page.avatarFallback.hidden = true;
+      });
+
+      page.avatar.addEventListener('error', () => {
+        page.avatar.hidden = true;
+        page.avatarFallback.hidden = false;
+      });
+
+      page.signOut.addEventListener('click', async () => {
+        setBusy(page.signOut, true, 'Signing out…');
+        try {
+          await request('POST', '/auth/logout');
+          showSignedOut();
+        } catch (error) {
+          if (error.status !== 401) {
+            toast(describe(error));
+          }
+        } finally {
+          setBusy(page.signOut, false);
+        }
+      });
+
+      page.copyCommand.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText('claude setup-token');
+          toast('Copied claude setup-token to the clipboard.');
+        } catch {
+          toast('Copy failed. Select the command and copy it by hand.');
+        }
+      });
+
+      page.repositoryFilter.addEventListener('input', filterRepositories);
+
+      page.retry.addEventListener('click', boot);
+
+      boot();
+    </script>
+  </body>
+</html>
