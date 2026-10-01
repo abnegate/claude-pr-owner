@@ -1978,7 +1978,19 @@ for block in blocks:
     check(len(referenced) > 0, "README.md caller snippet reads no needs.owner.outputs")
     for name in sorted(referenced - set(outputs)):
         problems.append(f"README.md caller snippet reads needs.owner.outputs.{name}, which owner.yml does not declare")
+    check((caller_owner.get("with") or {}).get("learner") == "${{ vars.CLAUDE_LEARNER }}",
+          "README.md owner job does not pass vars.CLAUDE_LEARNER as the learner")
 
+callers = [yaml.safe_load(block) for block in re.findall(r"^```ya?ml[^\n]*\n(.*?)^```", readme, re.M | re.S)]
+setup = next((caller for caller in callers if isinstance(caller, dict) and True in caller and "orchestrator.yml@" in str(caller.get("jobs"))), None)
+check(setup is not None, "README.md has no consumer setup snippet")
+if setup is not None:
+    triggers = setup[True]
+    check("workflow_dispatch" in triggers, "README.md consumer setup does not subscribe to workflow_dispatch")
+    schedule = triggers.get("schedule") or []
+    fields = str((schedule[0] if len(schedule) == 1 else {}).get("cron", "")).split()
+    check(len(fields) == 5 and fields[2:4] == ["*", "*"] and re.fullmatch(r"[0-6]", fields[4]) is not None,
+          f"README.md consumer setup schedule is not one weekly cron: {schedule!r}")
 
 if problems:
     sys.exit("\n".join(f"FAIL: {problem}" for problem in problems))
