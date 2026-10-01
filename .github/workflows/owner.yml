@@ -2,6 +2,14 @@ name: ureview owner
 
 on:
   workflow_call:
+    inputs:
+      learner:
+        description: >-
+          GitHub login that owns schedule and workflow_dispatch runs, which have
+          no pull request author. Callers pass vars.CLAUDE_LEARNER. Empty skips
+          those events.
+        type: string
+        default: ''
     outputs:
       login:
         description: GitHub login whose ureview enrolment applies to this event.
@@ -37,6 +45,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
+          LEARNER: ${{ inputs.learner }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           ISSUE_USER: ${{ github.event.issue.user.login }}
           WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
@@ -75,6 +84,9 @@ jobs:
               ;;
             issue_comment|issues)
               owner="${ISSUE_USER:-}"
+              ;;
+            schedule|workflow_dispatch)
+              owner="${LEARNER:-}"
               ;;
             workflow_run)
               if [[ "${WR_CONCLUSION:-}" == "failure" \
