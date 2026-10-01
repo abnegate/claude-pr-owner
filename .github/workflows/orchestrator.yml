@@ -816,6 +816,9 @@ jobs:
           use_commit_signing: 'false'
           use_sticky_comment: 'false'
           include_fix_links: 'false'
+          # The job token is held to this job's permissions; the Claude App
+          # token the action would otherwise fetch can write contents.
+          github_token: ${{ github.token }}
           show_full_output: 'true'
           settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1","CLAUDE_CODE_EFFORT_LEVEL":"{1}"}}}}', needs.plan.outputs.model, needs.plan.outputs.effort) }}
           # Naming the tool is what installs the inline-comment MCP server.

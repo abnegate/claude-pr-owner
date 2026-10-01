@@ -1423,6 +1423,13 @@ data = yaml.safe_load(open(".github/workflows/orchestrator.yml"))
 print(data["jobs"]["review"]["permissions"]["contents"])
 ')
 [[ "$review_job" == read ]] || fail 'review job can write repository contents'
+review_token=$(python3 -c '
+import yaml
+data = yaml.safe_load(open(".github/workflows/orchestrator.yml"))
+step = next(s for s in data["jobs"]["review"]["steps"] if s.get("name") == "Run Claude review")
+print(step["with"].get("github_token", ""))
+')
+[[ "$review_token" == '${{ github.token }}' ]] || fail 'review job uses the Claude App token, which can write contents, instead of the job token'
 grep -q $'^permissions:\n  contents: read' .github/workflows/test.yml || fail 'test workflow permissions are not contents: read'
 grep -q 'version=v1.7.12' .github/workflows/test.yml || fail 'actionlint version is not pinned'
 grep -qE 'actionlint -shellcheck= .*\.github/workflows/owner\.yml' .github/workflows/test.yml || fail 'test workflow does not lint owner.yml'
