@@ -1409,7 +1409,27 @@ fi
 grep -q 'default: claude-opus-5-5' .github/workflows/orchestrator.yml || fail 'opus 5.5 is not the default model'
 grep -q 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE' .github/workflows/orchestrator.yml || fail 'agents are not forced onto the workflow model'
 
-grep -q 'Bash(git log \*),Bash(git diff \*)' .github/workflows/orchestrator.yml || fail 'review job cannot run git log or git diff'
+review_arguments=$(python3 -c '
+import yaml
+data = yaml.safe_load(open(".github/workflows/orchestrator.yml"))
+step = next(s for s in data["jobs"]["review"]["steps"] if s.get("name") == "Run Claude review")
+print(step["with"]["claude_args"])
+')
+grep -q -- '--dangerously-skip-permissions' <<<"$review_arguments" || fail 'review job cannot run the /code-review skill or gh, so a clean review is never posted'
+grep -q -- '--allowedTools "mcp__github_inline_comment__create_inline_comment"' <<<"$review_arguments" || fail 'review job does not install the inline comment server'
+review_job=$(python3 -c '
+import yaml
+data = yaml.safe_load(open(".github/workflows/orchestrator.yml"))
+print(data["jobs"]["review"]["permissions"]["contents"])
+')
+[[ "$review_job" == read ]] || fail 'review job can write repository contents'
+review_token=$(python3 -c '
+import yaml
+data = yaml.safe_load(open(".github/workflows/orchestrator.yml"))
+step = next(s for s in data["jobs"]["review"]["steps"] if s.get("name") == "Run Claude review")
+print(step["with"].get("github_token", ""))
+')
+[[ "$review_token" == '${{ github.token }}' ]] || fail 'review job uses the Claude App token, which can write contents, instead of the job token'
 grep -q $'^permissions:\n  contents: read' .github/workflows/test.yml || fail 'test workflow permissions are not contents: read'
 grep -q 'version=v1.7.12' .github/workflows/test.yml || fail 'actionlint version is not pinned'
 grep -qE 'actionlint -shellcheck= .*\.github/workflows/owner\.yml' .github/workflows/test.yml || fail 'test workflow does not lint owner.yml'

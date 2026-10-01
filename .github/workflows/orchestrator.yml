@@ -730,8 +730,8 @@ jobs:
           retention-days: 1
 
   # Comment-only path, kept off the run matrix so that job stays read-only.
-  # contents is read, no patch is uploaded, and skip-permissions is not set,
-  # so this job can leave review comments and cannot push.
+  # contents is read and no patch is uploaded, so this job can leave review
+  # comments and cannot push.
   review:
     name: review
     needs: plan
@@ -816,16 +816,18 @@ jobs:
           use_commit_signing: 'false'
           use_sticky_comment: 'false'
           include_fix_links: 'false'
+          # The job token is held to this job's permissions; the Claude App
+          # token the action would otherwise fetch can write contents.
+          github_token: ${{ github.token }}
           show_full_output: 'true'
           settings: ${{ format('{{"env":{{"CLAUDE_CODE_SUBAGENT_MODEL":"{0}","CLAUDE_CODE_SUBAGENT_MODEL_FORCE":"1","CLAUDE_CODE_EFFORT_LEVEL":"{1}"}}}}', needs.plan.outputs.model, needs.plan.outputs.effort) }}
           # Naming the tool is what installs the inline-comment MCP server.
-          # It can leave a diff comment. It cannot approve or request changes.
-          # dangerously-skip-permissions is intentionally absent.
           claude_args: |
             --model ${{ needs.plan.outputs.model }}
             --effort ${{ needs.plan.outputs.effort }}
             ${{ needs.plan.outputs.fallback_arguments }}
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git log *),Bash(git diff *)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            --dangerously-skip-permissions
           prompt: ${{ steps.prompt.outputs.prompt }}
 
   consolidate:
