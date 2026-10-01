@@ -14,20 +14,29 @@ data = yaml.safe_load(text)
 plan = next(step["run"] for step in data["jobs"]["plan"]["steps"] if step.get("id") == "plan")
 run_prompt = next(step["run"] for step in data["jobs"]["run"]["steps"] if step.get("id") == "prompt")
 review_prompt = next(step["run"] for step in data["jobs"]["review"]["steps"] if step.get("id") == "prompt")
+review_context = next(step["run"] for step in data["jobs"]["review"]["steps"] if step.get("id") == "context")
 push = next(step["run"] for step in data["jobs"]["consolidate"]["steps"] if step.get("name") == "Push")
+publish = next(step["run"] for step in data["jobs"]["lessons"]["steps"] if step.get("name") == "Publish lessons")
+package = next(step["run"] for step in data["jobs"]["run"]["steps"] if step.get("id") == "pkg")
 owner = yaml.safe_load(Path(".github/workflows/owner.yml").read_text())
 resolve = next(step["run"] for step in owner["jobs"]["resolve"]["steps"] if step.get("id") == "owner")
 Path("/tmp/cpo-plan.sh").write_text(plan)
 Path("/tmp/cpo-run-prompt.sh").write_text(run_prompt)
 Path("/tmp/cpo-review-prompt.sh").write_text(review_prompt)
+Path("/tmp/cpo-review-context.sh").write_text(review_context)
 Path("/tmp/cpo-push.sh").write_text(push)
+Path("/tmp/cpo-publish.sh").write_text(publish)
+Path("/tmp/cpo-package.sh").write_text(package)
 Path("/tmp/cpo-owner.sh").write_text(resolve)
 PY
 
 bash -n /tmp/cpo-plan.sh
 bash -n /tmp/cpo-run-prompt.sh
 bash -n /tmp/cpo-review-prompt.sh
+bash -n /tmp/cpo-review-context.sh
 bash -n /tmp/cpo-push.sh
+bash -n /tmp/cpo-publish.sh
+bash -n /tmp/cpo-package.sh
 bash -n /tmp/cpo-owner.sh
 
 mock=$(mktemp -d)
@@ -76,6 +85,25 @@ fi
 if [[ "$1" == "pr" && "$2" == "comment" ]]; then
   exit 0
 fi
+if [[ "$1" == "pr" && ( "$2" == "edit" || "$2" == "create" ) ]]; then
+  exit "${MOCK_CREATE_FAIL:-0}"
+fi
+if [[ "$1" == "api" && "$2" == "repos/acme/app" ]]; then
+  printf '%s\n' "${MOCK_DEFAULT_BRANCH:-main}"
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "graphql" ]]; then
+  cat "${MOCK_THREADS:?}"
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "--paginate" ]]; then
+  cat "${MOCK_COMMENTS:?}"
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "-X" ]]; then
+  cat > "${MOCK_PAYLOAD:?}"
+  exit 0
+fi
 echo "unexpected gh: $*" >&2
 exit 1
 EOF
@@ -83,6 +111,36 @@ chmod +x "$mock/gh"
 
 cat > "$mock/git" << 'EOF'
 #!/usr/bin/env bash
+if [[ -n "${MOCK_GIT_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$MOCK_GIT_LOG"
+fi
+case "$1" in
+  cat-file)
+    [[ -n "${MOCK_LESSONS:-}" ]]
+    exit
+    ;;
+  show)
+    printf '%s\n' "$MOCK_LESSONS"
+    exit 0
+    ;;
+  checkout)
+    exit 0
+    ;;
+  am)
+    exit "${MOCK_AM_FAIL:-0}"
+    ;;
+  diff)
+    [[ -n "${MOCK_CHANGED:-}" ]] && printf '%s\n' "$MOCK_CHANGED"
+    exit 0
+    ;;
+  log)
+    [[ -n "${MOCK_COMMITS:-}" ]] && printf '%s\n' "$MOCK_COMMITS"
+    exit 0
+    ;;
+  format-patch)
+    exit 0
+    ;;
+esac
 if [[ "$1" == "rev-parse" && "$2" == "HEAD" ]]; then
   printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
   exit 0
@@ -143,6 +201,9 @@ run_plan() {
     BOTS_ENABLED="${BOTS_ENABLED:-true}" \
     COMMENTS_ENABLED="${COMMENTS_ENABLED:-true}" \
     REVIEW_ENABLED="${REVIEW_ENABLED:-false}" \
+    LEARNING_ENABLED="${LEARNING_ENABLED:-true}" \
+    LEARNING_PULL_REQUESTS="${LEARNING_PULL_REQUESTS-50}" \
+    MOCK_DEFAULT_BRANCH="${MOCK_DEFAULT_BRANCH:-main}" \
     BOT_ALLOWLIST="${BOT_ALLOWLIST:-coderabbitai[bot],greptile-apps[bot],greptileai[bot],codex[bot],copilot-*,github-copilot*}" \
     TRUSTED_ASSOCS="${TRUSTED_ASSOCS:-OWNER,MEMBER,COLLABORATOR}" \
     SEVERITIES="${SEVERITIES-critical,high}" \
@@ -173,6 +234,7 @@ run_owner() {
     GH_TOKEN=test-token \
     REPO=acme/app \
     EVENT_NAME="${EVENT_NAME:-pull_request}" \
+    LEARNER="${LEARNER:-}" \
     PR_AUTHOR="${PR_AUTHOR:-}" \
     ISSUE_USER="${ISSUE_USER:-}" \
     WR_CONCLUSION="${WR_CONCLUSION:-}" \
@@ -292,6 +354,10 @@ reset_event() {
   BOTS_ENABLED=true
   COMMENTS_ENABLED=true
   REVIEW_ENABLED=false
+  LEARNING_ENABLED=true
+  LEARNING_PULL_REQUESTS=50
+  LEARNER=
+  MOCK_DEFAULT_BRANCH=main
   SEVERITIES=critical,high
   OWNER=
   KEY=
@@ -305,6 +371,7 @@ reset_event() {
   MOCK_AUTHOR=abnegate
   MOCK_PRS=
   MOCK_GH_FAIL=0
+  MOCK_LESSONS=
   : > "$mock_log"
 }
 
@@ -904,6 +971,105 @@ for owner in '' abnegate; do
   expect_no_gh_calls
 done
 
+for event in schedule workflow_dispatch; do
+  reset_event
+  EVENT_NAME="$event"
+  MOCK_DEFAULT_BRANCH=trunk
+  run_plan || fail "plan failed on $event"
+  expect_output tasks '["learning"]'
+  expect_output review false
+  expect_output base_ref trunk
+  expect_output branch ''
+  expect_output pr_number ''
+  expect_output head_sha ''
+  expect_output learning_pull_requests 50
+  expect_stdout "$mock_log" 'api repos/acme/app --jq .default_branch'
+
+  reset_event
+  EVENT_NAME="$event"
+  LEARNING_ENABLED=false
+  run_plan || fail "plan failed on $event with learning off"
+  expect_output tasks '[]'
+  expect_output base_ref ''
+  expect_no_gh_calls
+done
+
+reset_event
+EVENT_NAME=schedule
+LEARNING_PULL_REQUESTS=7
+run_plan
+expect_output learning_pull_requests 7
+
+reset_event
+EVENT_NAME=schedule
+LEARNING_PULL_REQUESTS=
+run_plan
+expect_output learning_pull_requests 50
+
+for bad in 0 -1 abc 1.5 ' 5' '05' $'5\n::error::injected'; do
+  reset_event
+  LEARNING_PULL_REQUESTS="$bad"
+  if run_plan; then
+    fail "learning_pull_requests '$bad' should have failed"
+  fi
+  expect_line /tmp/cpo-plan.out "::error::learning_pull_requests '${bad//$'\n'/ }' is not a positive whole number."
+  expect_no_line_starting /tmp/cpo-plan.out '::error::injected'
+done
+
+for event in pull_request issue_comment; do
+  reset_event
+  EVENT_NAME="$event"
+  COMMENT_ASSOC=OWNER
+  COMMENT_BODY='@claude please fix this'
+  ISSUE_NUMBER=42
+  run_plan
+  if grep -qF 'learning' <<<"$(awk -F= '$1 == "tasks"' <<<"$PLAN_OUT")"; then
+    fail "$event planned the learning task"
+  fi
+done
+
+for settings in '{}' '{"learning":true}' '{"learning":"true"}'; do
+  reset_event
+  EVENT_NAME=schedule
+  OWNER=abnegate
+  LEARNING_ENABLED=false
+  [[ "$settings" == '{}' ]] && LEARNING_ENABLED=true
+  VARS_JSON=$(vars_for UREVIEW_ABNEGATE "$settings")
+  run_plan || fail "owner learning with $settings failed"
+  expect_output tasks '["learning"]'
+  expect_output base_ref main
+  expect_output owner abnegate
+done
+
+for settings in '{"learning":false}' '{"learning":"false"}'; do
+  reset_event
+  EVENT_NAME=workflow_dispatch
+  OWNER=abnegate
+  VARS_JSON=$(vars_for UREVIEW_ABNEGATE "$settings")
+  run_plan || fail "owner learning with $settings failed"
+  expect_output tasks '[]'
+  expect_output base_ref ''
+  expect_stdout /tmp/cpo-plan.out '@abnegate has no ureview task enabled for this event; skipping.'
+done
+
+reset_event
+EVENT_NAME=schedule
+OWNER=abnegate
+LEARNING_ENABLED=false
+VARS_JSON=$(vars_for UREVIEW_ABNEGATE '{}')
+run_plan
+expect_output tasks '[]'
+
+reset_event
+EVENT_NAME=schedule
+OWNER=abnegate
+VARS_JSON=$(vars_for UREVIEW_ABNEGATE '{}')
+HAS_OAUTH=false
+if run_plan; then
+  fail 'an enrolled learner without a token should fail the learning run'
+fi
+expect_stdout /tmp/cpo-plan.out '::error::@abnegate is enrolled in ureview but neither UREVIEW_OAUTH_TOKEN_ABNEGATE nor UREVIEW_API_KEY_ABNEGATE is set.'
+
 for event in pull_request pull_request_review pull_request_review_comment; do
   reset_event
   EVENT_NAME="$event"
@@ -1120,6 +1286,50 @@ run_owner || fail 'owner.yml must not fail on an unknown event'
 expect_not_enrolled_owner ''
 expect_no_gh_calls
 
+for event in schedule workflow_dispatch; do
+  reset_event
+  EVENT_NAME="$event"
+  LEARNER=some-user
+  PR_AUTHOR=abnegate
+  ISSUE_USER=abnegate
+  VARS_JSON=$(jq -nc '{UREVIEW_SOME_USER: "{}", UREVIEW_ABNEGATE: "{}"}')
+  run_owner || fail "owner.yml failed on $event with a learner"
+  expect_owner login some-user
+  expect_owner enrolled true
+  expect_owner oauth_secret UREVIEW_OAUTH_TOKEN_SOME_USER
+  expect_owner api_key_secret UREVIEW_API_KEY_SOME_USER
+  expect_owner push_secret UREVIEW_PUSH_TOKEN_SOME_USER
+  expect_no_gh_calls
+
+  for learner in '' 'bad login!' 'dependabot[bot]'; do
+    reset_event
+    EVENT_NAME="$event"
+    LEARNER="$learner"
+    VARS_JSON=$(jq -nc '{UREVIEW_ABNEGATE: "{}", "UREVIEW_DEPENDABOT[BOT]": "{}"}')
+    run_owner || fail "owner.yml failed on $event with learner '$learner'"
+    expect_not_enrolled_owner ''
+    expect_line /tmp/cpo-owner.out 'Could not resolve a ureview owner for this event; skipping.'
+  done
+
+  reset_event
+  EVENT_NAME="$event"
+  LEARNER=some-user
+  VARS_JSON=$(vars_for UREVIEW_OTHER '{}')
+  run_owner
+  expect_not_enrolled_owner some-user
+done
+
+for event in pull_request issues; do
+  reset_event
+  EVENT_NAME="$event"
+  LEARNER=some-user
+  PR_AUTHOR=abnegate
+  ISSUE_USER=abnegate
+  VARS_JSON=$(jq -nc '{UREVIEW_SOME_USER: "{}", UREVIEW_ABNEGATE: "{}"}')
+  run_owner
+  expect_owner login abnegate
+done
+
 legacy_warning="::warning::No push_token secret supplied; pushing with GITHUB_TOKEN. Downstream workflows (Tests, CodeQL, etc.) will NOT run on this commit. Set secrets.push_token to a PAT with contents:write to get CI coverage on Claude's pushes."
 
 reset_event
@@ -1144,7 +1354,7 @@ done
 
 compared_fields() {
   awk -F= '
-    BEGIN { split("tasks review branch pr_number head_sha base_ref review_id reviewer failed_run_id severities effort", names, " "); for (i in names) wanted[names[i]] = 1 }
+    BEGIN { split("tasks review branch pr_number head_sha base_ref review_id reviewer failed_run_id severities effort learning_pull_requests", names, " "); for (i in names) wanted[names[i]] = 1 }
     $1 in wanted { print }
   ' <<<"$PLAN_OUT"
 }
@@ -1196,6 +1406,12 @@ differential_event() {
       WR_HEAD_SHA="$run_sha"
       WR_ID=77
       ;;
+    schedule|workflow_dispatch)
+      PR_HEAD_REF=
+      PR_HEAD_SHA=
+      PR_BASE_REF=
+      PR_NUMBER=
+      ;;
   esac
 }
 
@@ -1203,14 +1419,15 @@ flag_value() {
   if (( $1 & $2 )); then echo true; else echo false; fi
 }
 
-for event in pull_request pull_request_review pull_request_review_comment issue_comment issues workflow_run; do
+for event in pull_request pull_request_review pull_request_review_comment issue_comment issues workflow_run schedule workflow_dispatch; do
   planned=0
-  for ((mask = 0; mask < 32; mask++)); do
+  for ((mask = 0; mask < 64; mask++)); do
     improvement=$(flag_value "$mask" 1)
     healing=$(flag_value "$mask" 2)
     bots=$(flag_value "$mask" 4)
     comments=$(flag_value "$mask" 8)
     review=$(flag_value "$mask" 16)
+    learning=$(flag_value "$mask" 32)
 
     differential_event "$event"
     IMPROVEMENT_ENABLED="$improvement"
@@ -1218,25 +1435,27 @@ for event in pull_request pull_request_review pull_request_review_comment issue_
     BOTS_ENABLED="$bots"
     COMMENTS_ENABLED="$comments"
     REVIEW_ENABLED="$review"
+    LEARNING_ENABLED="$learning"
     run_plan || fail "legacy plan failed on $event with mask $mask"
     legacy=$(compared_fields)
 
     differential_event "$event"
     OWNER=abnegate
     HAS_OAUTH=true
-    VARS_JSON=$(printf '{"UREVIEW_ABNEGATE":"{\\"improvement\\":%s,\\"healing\\":%s,\\"bots\\":%s,\\"comments\\":%s,\\"review\\":%s}"}' \
-      "$improvement" "$healing" "$bots" "$comments" "$review")
+    VARS_JSON=$(printf '{"UREVIEW_ABNEGATE":"{\\"improvement\\":%s,\\"healing\\":%s,\\"bots\\":%s,\\"comments\\":%s,\\"review\\":%s,\\"learning\\":%s}"}' \
+      "$improvement" "$healing" "$bots" "$comments" "$review" "$learning")
     IMPROVEMENT_ENABLED=true
     HEALING_ENABLED=true
     BOTS_ENABLED=true
     COMMENTS_ENABLED=true
     REVIEW_ENABLED=true
+    LEARNING_ENABLED=true
     run_plan || fail "per-user plan failed on $event with mask $mask"
     per_user=$(compared_fields)
 
-    [[ "$(wc -l <<<"$legacy")" -eq 11 ]] || fail "legacy plan on $event with mask $mask is missing compared outputs: $legacy"
+    [[ "$(wc -l <<<"$legacy")" -eq 12 ]] || fail "legacy plan on $event with mask $mask is missing compared outputs: $legacy"
     [[ "$legacy" == "$per_user" ]] \
-      || fail "$event with improvement=$improvement healing=$healing bots=$bots comments=$comments review=$review: legacy and per-user plans differ"$'\n'"legacy:"$'\n'"$legacy"$'\n'"per-user:"$'\n'"$per_user"
+      || fail "$event with improvement=$improvement healing=$healing bots=$bots comments=$comments review=$review learning=$learning: legacy and per-user plans differ"$'\n'"legacy:"$'\n'"$legacy"$'\n'"per-user:"$'\n'"$per_user"
     if ! grep -qxF -e 'tasks=[]' <<<"$legacy" || grep -qxF 'review=true' <<<"$legacy"; then
       planned=$((planned + 1))
     fi
@@ -1252,16 +1471,85 @@ prompt_body() {
   printf '%s\n' "$body"
 }
 
+expect_text() {
+  local label="$1" text="$2" want
+  shift 2
+  for want in "$@"; do
+    grep -qF -- "$want" <<<"$text" || fail "$label is missing '$want'"
+  done
+}
+
+expect_no_placeholders() {
+  local label="$1" text="$2" left
+  left=$(grep -oE '__[A-Z_]+__' <<<"$text" | sort -u | paste -sd' ' - || true)
+  [[ -z "$left" ]] || fail "$label left placeholders: $left"
+}
+
+marker='<!-- ureview:summary -->'
+lessons_path=.github/ureview/lessons.md
+lessons_branch=ureview/lessons
+
 outfile=$(mktemp)
-env REPO=acme/app PR_NUMBER=7 BASE_REF=main HEAD_BRANCH='feature/review-mode' HEAD_SHA=deadbeef \
-  SEVERITIES='critical, high' GITHUB_OUTPUT="$outfile" bash /tmp/cpo-review-prompt.sh
+env REPO=acme/app PR_NUMBER=7 BASE_REF=develop HEAD_BRANCH='feature/review-mode' HEAD_SHA=deadbeef \
+  SEVERITIES='critical, high' CONTEXT=/tmp/ureview DEFAULT_BRANCH=main MARKER="$marker" \
+  GITHUB_OUTPUT="$outfile" bash /tmp/cpo-review-prompt.sh
 body=$(prompt_body "$outfile")
-grep -q 'Only comment on findings at these alert levels: critical, high.' <<<"$body" || fail 'review prompt missing severities'
-grep -q '/code-review:code-review --comment acme/app/pull/7' <<<"$body" || fail 'review prompt missing command'
-if grep -q '__SEVERITIES__' <<<"$body"; then
-  fail 'review prompt left a placeholder'
-fi
 rm -f "$outfile"
+expect_no_placeholders 'review prompt' "$body"
+expect_text 'review prompt' "$body" \
+  'You are reviewing PR #7 in acme/app.' \
+  'Head: feature/review-mode at commit deadbeef. Base: develop.' \
+  'Report only findings at these levels: critical, high.' \
+  'Never use other reviewers'"'"' comments as input.' \
+  'whether a bot or a' \
+  'git diff origin/develop...deadbeef > /tmp/ureview/diff.patch' \
+  'Every CLAUDE.md and AGENTS.md' \
+  '/tmp/ureview/lessons.md, if it exists' \
+  'distilled from its history on main' \
+  '## 2. Trace impact' \
+  'find its callers and references with rg or grep' \
+  'check every call' \
+  '/tmp/ureview/impact.md' \
+  'Launch these seven passes as parallel subagents with the Agent tool' \
+  'against every lesson relevant to it' \
+  '1. Correctness and logic' \
+  '2. State, concurrency, and idempotency' \
+  '3. Error handling and failure modes' \
+  '4. Security' \
+  '5. Contracts and compatibility' \
+  '6. Tests' \
+  '7. Repository conventions' \
+  '## 4. Verify' \
+  'skeptical verifier subagent' \
+  'CONFIRMED' 'PLAUSIBLE' 'REFUTED' \
+  'PLAUSIBLE findings at 80 or above' \
+  '🔴 Critical' '🟠 High' '🟡 Medium' '🔵 Low' \
+  'When torn between two' \
+  'Style is never above Low.' \
+  'Drop findings below critical, high' \
+  '/tmp/ureview/threads.json' \
+  'unresolved thread at the same path and the same' \
+  '✅ Fixed' \
+  'commit_id deadbeef' \
+  'confirmed: true' \
+  'Record the html_url each call returns.' \
+  '**Failure scenario:**' \
+  '**Suggested fix:**' \
+  '```suggestion' \
+  '## Code review' \
+  '**Confidence: N/10**' \
+  '| # | Priority | File:line | Finding |' \
+  '[path/to/file.ts:42](<html_url>)' \
+  '<summary>What I checked</summary>' \
+  '"No issues found at critical, high."' \
+  'lower-priority findings not shown' \
+  'bash /tmp/ureview/post-summary.sh /tmp/ureview/review.md' \
+  "It adds the hidden marker \`$marker\`" \
+  'Do not edit files, commit, push, approve, request changes, resolve' \
+  'Do not add "Fix this" links.'
+if grep -qF '/code-review:code-review' <<<"$body"; then
+  fail 'review prompt still delegates to /code-review:code-review'
+fi
 
 outfile=$(mktemp)
 env TASK=improvement REPO=acme/app PR_NUMBER=7 BASE_REF=main HEAD_BRANCH='feature/review-mode' HEAD_SHA=deadbeef \
@@ -1269,10 +1557,265 @@ env TASK=improvement REPO=acme/app PR_NUMBER=7 BASE_REF=main HEAD_BRANCH='featur
   GITHUB_OUTPUT="$outfile" bash /tmp/cpo-run-prompt.sh
 body=$(prompt_body "$outfile")
 grep -q 'fix findings at these alert levels only: critical, high.' <<<"$body" || fail 'improvement prompt missing severities'
-if grep -q '__SEVERITIES__' <<<"$body"; then
-  fail 'improvement prompt left a placeholder'
-fi
+expect_no_placeholders 'improvement prompt' "$body"
+expect_text 'improvement prompt' "$body" \
+  'You are running as task "improvement" on PR #7 in acme/app.' \
+  'Branch: feature/review-mode at commit deadbeef.'
 rm -f "$outfile"
+
+outfile=$(mktemp)
+env PATH="$mock:$PATH" TASK=learning REPO=acme/app PR_NUMBER= BASE_REF=trunk HEAD_BRANCH= HEAD_SHA= \
+  SEVERITIES='critical, high' REVIEWER= REVIEW_ID= FAILED_RUN_ID= CR_BODY= IS_BODY= IS_TITLE= \
+  LEARNING_PULL_REQUESTS=25 LESSONS_PATH="$lessons_path" LESSONS_BRANCH="$lessons_branch" \
+  GITHUB_OUTPUT="$outfile" bash /tmp/cpo-run-prompt.sh
+body=$(prompt_body "$outfile")
+rm -f "$outfile"
+expect_no_placeholders 'learning prompt' "$body"
+expect_text 'learning prompt' "$body" \
+  'You are running as task "learning" in acme/app on trunk at commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.' \
+  'DO NOT push.' \
+  'record' \
+  'them in .github/ureview/lessons.md.' \
+  'Change only .github/ureview/lessons.md.' \
+  'force-pushes your commit to ureview/lessons' \
+  'Collect evidence from the last 25 merged pull requests' \
+  'gh pr list --repo acme/app --state merged --limit 25' \
+  'parallel subagents with the Agent tool' \
+  'Fix commits.' \
+  'Review threads that were resolved and then fixed.' \
+  'Reverts.' \
+  '--label bug' \
+  'closedByPullRequestsReferences' \
+  'Group the records by root cause' \
+  'git show origin/ureview/lessons:.github/ureview/lessons.md' \
+  'Do not rewrite the' \
+  'under about 300 lines' \
+  '- **Root cause:**' \
+  '- **Where:**' \
+  '- **Detect in review:**' \
+  '- **Examples:**' \
+  'git commit -m "chore: update ureview lessons"' \
+  'If nothing changed, exit without committing.'
+if grep -qF 'PR #' <<<"$body"; then
+  fail 'learning prompt names a pull request it does not run on'
+fi
+
+run_context() {
+  local rc
+  set +e
+  env PATH="$mock:$PATH" GH_TOKEN=test-token REPO=acme/app PR_NUMBER=7 HEAD_SHA=deadbeef \
+    DEFAULT_BRANCH=main LESSONS_PATH="$lessons_path" CONTEXT="$context" LOGIN='claude[bot]' \
+    MARKER="$marker" GITHUB_SERVER_URL=https://github.com \
+    MOCK_THREADS="$threads" MOCK_COMMENTS="$comments" MOCK_LESSONS="${MOCK_LESSONS:-}" \
+    MOCK_LOG="$mock_log" bash /tmp/cpo-review-context.sh > /tmp/cpo-context.out 2>&1
+  rc=$?
+  set -e
+  return "$rc"
+}
+
+run_summary() {
+  local rc
+  set +e
+  env PATH="$mock:$PATH" MOCK_COMMENTS="$comments" MOCK_PAYLOAD="$payload" MOCK_LOG="$mock_log" \
+    bash "$context/post-summary.sh" "$@" > /tmp/cpo-summary.out 2>&1
+  rc=$?
+  set -e
+  return "$rc"
+}
+
+context=$(mktemp -d)
+threads="$context/threads-pages.json"
+comments="$context/comments-pages.json"
+payload="$context/payload.json"
+jq -nc '
+  def thread($login; $body; $line):
+    {isResolved: false, isOutdated: false, path: "src/pay.js", line: $line, originalLine: 9,
+     comments: {nodes: [{author: (if $login == null then null else {login: $login} end), body: $body, url: "https://github.com/acme/app/pull/7#discussion_r1"}]}};
+  {data: {repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: true, endCursor: "x"}, nodes: [
+    (thread("claude"; "**🟠 High: Retry repeats the charge**\n\nbody"; 12)
+      | .comments.nodes += [{author: {login: "jake"}, body: "intended", url: "u2"}, {author: {login: "claude"}, body: "still there", url: "u3"}]),
+    thread("coderabbitai"; "**Potential issue** rabbit"; 3)
+  ]}}}}},
+  {data: {repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: false, endCursor: null}, nodes: [
+    (thread("claude[bot]"; "**🔵 Low: Name the constant**"; null) | .isResolved = true),
+    thread(null; "ghost"; 4)
+  ]}}}}}' > "$threads"
+jq -nc --arg marker "$marker" '
+  [{id: 1, user: {login: "mallory"}, body: ($marker + "\nfake")}],
+  [{id: 5, user: {login: "claude[bot]"}, body: ($marker + "\n## Code review\nold")}, {id: 6, user: {login: "claude[bot]"}, body: "unrelated"}]' > "$comments"
+
+reset_event
+MOCK_LESSONS=$'# ureview lessons\n\n## Retries repeat side effects'
+run_context || fail "review context failed: $(cat /tmp/cpo-context.out)"
+[[ "$(cat "$context/lessons.md")" == "$MOCK_LESSONS" ]] || fail "lessons.md is not the default branch's file: $(cat "$context/lessons.md")"
+expect_stdout "$mock_log" 'api graphql --paginate'
+expect_stdout "$mock_log" '-f owner=acme -f name=app -F number=7'
+expect_stdout "$mock_log" 'api --paginate repos/acme/app/issues/7/comments'
+[[ "$(jq length "$context/threads.json")" == 2 ]] || fail "threads.json kept threads by other authors: $(cat "$context/threads.json")"
+[[ "$(jq -r '.[0].title' "$context/threads.json")" == '**🟠 High: Retry repeats the charge**' ]] || fail 'threads.json title is not the first line'
+[[ "$(jq -c '.[0].replies' "$context/threads.json")" == '["still there"]' ]] || fail "threads.json kept replies by others: $(jq -c '.[0].replies' "$context/threads.json")"
+[[ "$(jq -c '.[1] | [.line, .resolved]' "$context/threads.json")" == '[9,true]' ]] || fail 'threads.json lost the original line or resolution'
+if grep -qF -e rabbit -e intended -e ghost "$context/threads.json"; then
+  fail 'threads.json contains other reviewers'"'"' comments'
+fi
+[[ "$(cat "$context/summary.md")" == "$marker"$'\n## Code review\nold' ]] || fail "summary.md is not the earlier claude[bot] summary: $(cat "$context/summary.md")"
+[[ -x "$context/post-summary.sh" ]] || fail 'post-summary.sh was not written'
+bash -n "$context/post-summary.sh"
+
+printf '%s\n%s\n\nBody.\n' "$marker" '## Code review' > "$context/review.md"
+: > "$mock_log"
+run_summary "$context/review.md" || fail "post-summary.sh failed: $(cat /tmp/cpo-summary.out)"
+expect_stdout "$mock_log" '-X PATCH repos/acme/app/issues/comments/5 --input -'
+expect_line /tmp/cpo-summary.out 'Updated summary comment 5.'
+posted=$(jq -r .body "$payload")
+[[ "$(grep -cF -- "$marker" <<<"$posted")" == 1 ]] || fail "summary does not hold the marker exactly once: $posted"
+[[ "$(head -n 1 <<<"$posted")" == "$marker" ]] || fail 'summary does not start with the marker'
+[[ "$(tail -n 1 <<<"$posted")" == '<sub>Reviewed commit [`deadbeef`](https://github.com/acme/app/commit/deadbeef)</sub>' ]] \
+  || fail "summary footer is not the reviewed commit: $(tail -n 1 <<<"$posted")"
+expect_text 'summary' "$posted" '## Code review' 'Body.'
+
+jq -nc --arg marker "$marker" '[{id: 1, user: {login: "mallory"}, body: ($marker + "\nfake")}], []' > "$comments"
+: > "$mock_log"
+run_summary "$context/review.md" || fail "post-summary.sh failed: $(cat /tmp/cpo-summary.out)"
+expect_stdout "$mock_log" '-X POST repos/acme/app/issues/7/comments --input -'
+if grep -qF PATCH "$mock_log"; then
+  fail 'post-summary.sh edited a comment another user wrote'
+fi
+
+: > "$mock_log"
+: > "$context/empty.md"
+for missing in "$context/empty.md" "$context/absent.md"; do
+  if run_summary "$missing"; then
+    fail "post-summary.sh posted $missing"
+  fi
+done
+if grep -qF -- '-X' "$mock_log"; then
+  fail 'post-summary.sh posted an empty summary'
+fi
+
+rm -rf "$context"
+context=$(mktemp -d)
+threads="$context/threads-pages.json"
+comments="$context/comments-pages.json"
+jq -nc '{data: {repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: false, endCursor: null}, nodes: []}}}}}' > "$threads"
+echo '[]' > "$comments"
+reset_event
+run_context || fail "review context failed without history: $(cat /tmp/cpo-context.out)"
+[[ ! -e "$context/lessons.md" ]] || fail 'lessons.md was written although the default branch has none'
+[[ ! -e "$context/summary.md" ]] || fail 'summary.md was written although there is no earlier summary'
+[[ "$(cat "$context/threads.json")" == '[]' ]] || fail 'threads.json is not empty'
+rm -rf "$context"
+
+run_package() {
+  local outfile
+  outfile=$(mktemp)
+  env PATH="$mock:$PATH" GITHUB_OUTPUT="$outfile" GITHUB_WORKSPACE="$(mktemp -d)" TASK="$1" \
+    HEAD_BRANCH="$2" BASE_REF="$3" MOCK_COMMITS="$4" MOCK_GIT_LOG="$git_log" \
+    bash /tmp/cpo-package.sh > /tmp/cpo-package.out 2>&1 || fail "packaging failed: $(cat /tmp/cpo-package.out)"
+  PACKAGE_OUT=$(cat "$outfile")
+  rm -f "$outfile"
+}
+
+git_log=$(mktemp)
+run_package learning '' trunk 'abc1234 chore: update ureview lessons'
+expect_line "$git_log" 'log origin/trunk..HEAD --oneline'
+expect_line "$git_log" 'format-patch origin/trunk..HEAD -o /tmp/patch'
+expect_in package "$PACKAGE_OUT" has_changes true
+
+: > "$git_log"
+run_package improvement feature/review-mode main 'abc1234 (fix): something'
+expect_line "$git_log" 'format-patch origin/feature/review-mode..HEAD -o /tmp/patch'
+
+: > "$git_log"
+run_package learning '' trunk ''
+expect_in package "$PACKAGE_OUT" has_changes false
+if grep -q '^format-patch' "$git_log"; then
+  fail 'packaging made a patch from no commits'
+fi
+rm -f "$git_log"
+
+run_publish() {
+  local rc
+  set +e
+  env PATH="$mock:$PATH" GH_TOKEN=test-token REPO=acme/app BASE_REF="$publish_base" LEARNING_PULL_REQUESTS=50 \
+    TITLE='chore: update ureview lessons' LESSONS_PATH="$lessons_path" LESSONS_BRANCH="$lessons_branch" \
+    PATCHES="$patches" MOCK_CHANGED="${MOCK_CHANGED-$lessons_path}" MOCK_PRS="${MOCK_PRS:-[]}" \
+    MOCK_CREATE_FAIL="${MOCK_CREATE_FAIL:-0}" MOCK_LOG="$mock_log" MOCK_GIT_LOG="$git_log" \
+    bash /tmp/cpo-publish.sh > /tmp/cpo-publish.out 2>&1
+  rc=$?
+  set -e
+  return "$rc"
+}
+
+reset_publish() {
+  reset_event
+  publish_base=main
+  patches=$(mktemp -d)
+  touch "$patches/0001-chore-update-ureview-lessons.patch"
+  git_log=$(mktemp)
+  unset MOCK_CHANGED MOCK_CREATE_FAIL
+}
+
+expect_no_push() {
+  if grep -q '^push' "$git_log"; then
+    fail "lessons publish pushed: $(cat "$git_log")"
+  fi
+}
+
+reset_publish
+run_publish || fail "lessons publish failed: $(cat /tmp/cpo-publish.out)"
+expect_line "$git_log" 'checkout -B ureview/lessons origin/main'
+expect_line "$git_log" 'push --force origin HEAD:refs/heads/ureview/lessons'
+[[ "$(grep -c '^push' "$git_log")" == 1 ]] || fail "lessons publish pushed more than once: $(cat "$git_log")"
+expect_stdout "$mock_log" 'pr list --repo acme/app --head ureview/lessons --base main --state open'
+expect_stdout "$mock_log" 'pr create --repo acme/app --base main --head ureview/lessons --title chore: update ureview lessons'
+expect_line /tmp/cpo-publish.out 'Opened the lessons pull request.'
+
+reset_publish
+MOCK_PRS='[{"number":12}]'
+run_publish || fail "lessons publish failed with an open pull request: $(cat /tmp/cpo-publish.out)"
+expect_stdout "$mock_log" 'pr edit 12 --repo acme/app --title chore: update ureview lessons'
+if grep -qF 'pr create' "$mock_log"; then
+  fail 'lessons publish opened a second pull request'
+fi
+
+reset_publish
+rmdir "$patches" 2>/dev/null || rm -rf "$patches"
+run_publish || fail 'lessons publish failed without a patch'
+expect_line /tmp/cpo-publish.out 'The learning task changed no lessons.'
+expect_no_push
+expect_no_gh_calls
+
+reset_publish
+MOCK_CHANGED=
+run_publish || fail 'lessons publish failed when nothing changed'
+expect_line /tmp/cpo-publish.out 'The lessons match main already.'
+expect_no_push
+
+reset_publish
+MOCK_CHANGED=$'.github/ureview/lessons.md\nsrc/app.js'
+if run_publish; then
+  fail 'lessons publish accepted a commit that touches other files'
+fi
+expect_line /tmp/cpo-publish.out '::error::The learning task changed files other than .github/ureview/lessons.md: .github/ureview/lessons.md src/app.js'
+expect_no_push
+
+for base in ureview/lessons ''; do
+  reset_publish
+  publish_base="$base"
+  if run_publish; then
+    fail "lessons publish ran with default branch '$base'"
+  fi
+  expect_line /tmp/cpo-publish.out "::error::Refusing to publish lessons: the default branch is '$base'."
+  expect_no_push
+done
+
+reset_publish
+MOCK_CREATE_FAIL=1
+if run_publish; then
+  fail 'lessons publish hid a failed pull request creation'
+fi
+expect_line /tmp/cpo-publish.out '::error::Pushed ureview/lessons but could not open its pull request. Pass a push_token, or allow GitHub Actions to create pull requests in the repository settings.'
 
 outfile=$(mktemp)
 env TASK=bots REPO=acme/app PR_NUMBER=7 BASE_REF=main HEAD_BRANCH='feature/review-mode' HEAD_SHA=deadbeef \
@@ -1315,6 +1858,17 @@ check("per_user" not in inputs, "orchestrator still declares a per_user input")
 effort_input = inputs.get("effort") or {}
 check(effort_input.get("type") == "string", "orchestrator effort input is not type: string")
 check(effort_input.get("default") == "high", "orchestrator effort input does not default to high")
+severities_input = inputs.get("severities") or {}
+check(severities_input.get("default") == "critical,high",
+      "severities default changed, which would change improvement and bots too")
+learning_input = inputs.get("learning") or {}
+check(learning_input.get("type") == "boolean" and learning_input.get("default") is True,
+      "orchestrator learning input is not a boolean defaulting to true")
+count_input = inputs.get("learning_pull_requests") or {}
+check(count_input.get("type") == "number" and count_input.get("default") == 50,
+      "orchestrator learning_pull_requests input is not a number defaulting to 50")
+check(orchestrator.get("env") == {"LESSONS_PATH": ".github/ureview/lessons.md", "LESSONS_BRANCH": "ureview/lessons"},
+      f"orchestrator env is {orchestrator.get('env')!r}")
 names = list(inputs)
 if "owner" in names and "severities" in names:
     check(names.index("owner") == names.index("severities") + 1, "orchestrator owner input does not follow severities")
@@ -1347,6 +1901,51 @@ for key in ("owner", "key", "model", "effort", "fallback_arguments"):
     got = (plan_job.get("outputs") or {}).get(key)
     check(got == f"${{{{ steps.plan.outputs.{key} }}}}", f"plan job output {key} is {got!r}")
 
+jobs = orchestrator["jobs"]
+plan_outputs = plan_job.get("outputs") or {}
+check(plan_outputs.get("learning_pull_requests") == "${{ steps.plan.outputs.learning_pull_requests }}",
+      "plan job does not output learning_pull_requests")
+check(plan_env.get("LEARNING_ENABLED") == "${{ inputs.learning }}", "Decide tasks does not read inputs.learning")
+check(plan_env.get("LEARNING_PULL_REQUESTS") == "${{ inputs.learning_pull_requests }}",
+      "Decide tasks does not read inputs.learning_pull_requests")
+
+run_checkout = next(step for step in jobs["run"]["steps"] if step.get("name") == "Checkout consumer PR branch")
+check(run_checkout["with"]["ref"] == "${{ needs.plan.outputs.branch || needs.plan.outputs.base_ref || github.ref }}",
+      f"run checkout ref is {run_checkout['with']['ref']!r}")
+
+consolidate_if = " ".join(str(jobs["consolidate"]["if"]).split())
+check("needs.plan.outputs.branch != ''" in consolidate_if,
+      "consolidate no longer requires a branch, so learning could push to the default branch")
+
+review_job = jobs["review"]
+review_steps = [step.get("name") for step in review_job["steps"]]
+check(review_steps.index("Gather review context") < review_steps.index("Run Claude review"),
+      "review context is not gathered before Claude runs")
+gather = next(step for step in review_job["steps"] if step.get("name") == "Gather review context")
+check((gather.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}", "review context is not gathered with the job token")
+review_run = next(step for step in review_job["steps"] if step.get("name") == "Run Claude review")
+check("plugins" not in review_run["with"], "review job still installs the code-review plugin it no longer runs")
+review_checkout = next(step for step in review_job["steps"] if step.get("name") == "Checkout consumer PR head")
+check(review_checkout["with"]["ref"] == "${{ needs.plan.outputs.head_sha }}", "review does not check out the reviewed commit")
+check(review_job["env"].get("MARKER") == "<!-- ureview:summary -->", "review marker changed")
+check(review_job["env"].get("LOGIN") == "claude[bot]", "review login changed")
+
+lessons = jobs.get("lessons") or {}
+check(lessons.get("needs") == ["plan", "run"], f"lessons job needs {lessons.get('needs')!r}")
+lessons_if = " ".join(str(lessons.get("if")).split())
+check("contains(needs.plan.outputs.tasks, '\"learning\"')" in lessons_if and "always()" in lessons_if,
+      f"lessons job if is {lessons_if!r}")
+check(lessons.get("permissions") == {"contents": "write", "pull-requests": "write"},
+      f"lessons job permissions are {lessons.get('permissions')!r}")
+check((lessons.get("env") or {}).get("TITLE") == "chore: update ureview lessons", "lessons pull request title changed")
+lessons_checkout = next(step for step in lessons["steps"] if step.get("name") == "Checkout default branch")
+check(lessons_checkout["with"]["ref"] == "${{ needs.plan.outputs.base_ref }}", "lessons job does not start from the default branch")
+publish = next(step for step in lessons["steps"] if step.get("name") == "Publish lessons")
+check(publish["env"]["GH_TOKEN"] == "${{ secrets.push_token != '' && secrets.push_token || github.token }}",
+      "lessons pull request token wiring changed")
+download = next(step for step in lessons["steps"] if step.get("name") == "Download lessons patch")
+check(download["with"].get("pattern") == "patch-learning", "lessons job downloads other tasks' patches")
+
 owner_workflow = yaml.safe_load(Path(".github/workflows/owner.yml").read_text())
 call = owner_workflow[True]["workflow_call"]
 check("secrets" not in call, "owner.yml declares workflow_call secrets")
@@ -1363,6 +1962,9 @@ for name in output_names:
     check(job_value == f"${{{{ steps.owner.outputs.{name} }}}}", f"owner.yml resolve output {name} is {job_value!r}")
 owner_step = next(step for step in resolve["steps"] if step.get("id") == "owner")
 check((owner_step.get("env") or {}).get("VARS_JSON") == "${{ toJSON(vars) }}", "owner.yml does not read toJSON(vars)")
+learner = (call.get("inputs") or {}).get("learner") or {}
+check(learner.get("type") == "string" and learner.get("default") == "", "owner.yml learner input is not an optional string")
+check((owner_step.get("env") or {}).get("LEARNER") == "${{ inputs.learner }}", "owner.yml does not read inputs.learner")
 
 readme = Path("README.md").read_text()
 blocks = [block for block in re.findall(r"^```ya?ml[^\n]*\n(.*?)^```", readme, re.M | re.S) if "owner.yml@" in block]
@@ -1376,6 +1978,19 @@ for block in blocks:
     check(len(referenced) > 0, "README.md caller snippet reads no needs.owner.outputs")
     for name in sorted(referenced - set(outputs)):
         problems.append(f"README.md caller snippet reads needs.owner.outputs.{name}, which owner.yml does not declare")
+    check((caller_owner.get("with") or {}).get("learner") == "${{ vars.CLAUDE_LEARNER }}",
+          "README.md owner job does not pass vars.CLAUDE_LEARNER as the learner")
+
+callers = [yaml.safe_load(block) for block in re.findall(r"^```ya?ml[^\n]*\n(.*?)^```", readme, re.M | re.S)]
+setup = next((caller for caller in callers if isinstance(caller, dict) and True in caller and "orchestrator.yml@" in str(caller.get("jobs"))), None)
+check(setup is not None, "README.md has no consumer setup snippet")
+if setup is not None:
+    triggers = setup[True]
+    check("workflow_dispatch" in triggers, "README.md consumer setup does not subscribe to workflow_dispatch")
+    schedule = triggers.get("schedule") or []
+    fields = str((schedule[0] if len(schedule) == 1 else {}).get("cron", "")).split()
+    check(len(fields) == 5 and fields[2:4] == ["*", "*"] and re.fullmatch(r"[0-6]", fields[4]) is not None,
+          f"README.md consumer setup schedule is not one weekly cron: {schedule!r}")
 
 if problems:
     sys.exit("\n".join(f"FAIL: {problem}" for problem in problems))
@@ -1398,8 +2013,8 @@ count() {
   || fail 'run and review settings do not force agents onto the planned model'
 [[ "$(count 'claude_code_oauth_token: ${{ secrets.oauth_token }}' .github/workflows/orchestrator.yml)" == 2 ]] || fail 'oauth token wiring changed'
 [[ "$(count 'anthropic_api_key: ${{ secrets.api_key }}' .github/workflows/orchestrator.yml)" == 2 ]] || fail 'api key wiring changed'
-[[ "$(count "token: \${{ secrets.push_token != '' && secrets.push_token || github.token }}" .github/workflows/orchestrator.yml)" == 1 ]] \
-  || fail 'consolidate checkout token wiring changed'
+[[ "$(count "token: \${{ secrets.push_token != '' && secrets.push_token || github.token }}" .github/workflows/orchestrator.yml)" == 2 ]] \
+  || fail 'consolidate and lessons checkout token wiring changed'
 if grep -qF -e 'toJSON(secrets)' -e 'secrets: inherit' .github/workflows/orchestrator.yml; then
   fail 'orchestrator reads the whole secrets map'
 fi
@@ -1415,7 +2030,7 @@ data = yaml.safe_load(open(".github/workflows/orchestrator.yml"))
 step = next(s for s in data["jobs"]["review"]["steps"] if s.get("name") == "Run Claude review")
 print(step["with"]["claude_args"])
 ')
-grep -q -- '--dangerously-skip-permissions' <<<"$review_arguments" || fail 'review job cannot run the /code-review skill or gh, so a clean review is never posted'
+grep -q -- '--dangerously-skip-permissions' <<<"$review_arguments" || fail 'review job cannot run its subagents or gh, so its summary is never posted'
 grep -q -- '--allowedTools "mcp__github_inline_comment__create_inline_comment"' <<<"$review_arguments" || fail 'review job does not install the inline comment server'
 review_job=$(python3 -c '
 import yaml
