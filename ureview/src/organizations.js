@@ -1,17 +1,24 @@
 import { validate } from './config.js';
 import * as enrolment from './enrolment.js';
 import { GitHubError } from './GitHubError.js';
-import { installations, request } from './github.js';
+import { installations, paginate, request } from './github.js';
 import { names } from './names.js';
 import { empty, json } from './response.js';
 import { validateTokens } from './secret.js';
-import { Store } from './Store.js';
+import { Store, UNSCOPED } from './Store.js';
+import { ValidationError } from './ValidationError.js';
 
 const DENIED = new Set([403, 404]);
 const INTEGRATION = 'Resource not accessible by integration';
 const ORGANIZATION = 'Organization';
 const PERMISSION = 'permission';
 const NOT_ADMIN = 'not_admin';
+const UNKNOWN = Object.freeze({
+  config: null,
+  secrets: Object.freeze({ oauth: false, push: false, apiKey: false }),
+  repositories: null,
+  exposed: Object.freeze([]),
+});
 
 export async function list(context) {
   const { fetch, user } = context;
@@ -37,33 +44,58 @@ export async function get(context) {
   );
 }
 
+export async function listRepositories(context) {
+  const { fetch, params, user } = context;
+  const found = await installation(fetch, user.token, params.organization);
+  const repositories = await paginate(fetch, {
+    path: `/user/installations/${encodeURIComponent(found.id)}/repositories?per_page=100`,
+    token: user.token,
+    key: 'repositories',
+  });
+  return json(200, {
+    repositories: repositories
+      .filter(
+        (repository) =>
+          repository?.owner?.login?.toLowerCase() ===
+          found.account.login.toLowerCase(),
+      )
+      .map(({ id, name, private: hidden }) => ({
+        id,
+        name,
+        private: hidden === true,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+  });
+}
+
 export async function saveConfig(context) {
-  const config = validate(context.body);
-  await store(context).saveConfig(names(context.user.login), config);
-  return json(200, { config });
+  const identifiers = names(context.user.login);
+  const { repositories, rest } = await scoped(context, identifiers);
+  const config = validate(rest);
+  const scopedStore = store(context, repositories);
+  await scopedStore.saveConfig(identifiers, config);
+  await scopedStore.restrict(identifiers);
+  return json(200, { config, repositories });
 }
 
 export async function saveTokens(context) {
-  const tokens = validateTokens(context.body);
-  const repositorySelection = await selection(context);
-  await store(context, repositorySelection).saveSecrets(
-    names(context.user.login),
-    tokens,
-  );
+  const identifiers = names(context.user.login);
+  const { repositories, rest } = await scoped(context, identifiers);
+  const tokens = validateTokens(rest);
+  const scopedStore = store(context, repositories);
+  await scopedStore.saveSecrets(identifiers, tokens);
+  await scopedStore.restrict(identifiers);
   return empty(204);
 }
 
 export async function enrol(context) {
-  const submitted = enrolment.validate(context.body);
-  const repositorySelection = await selection(context);
-  return json(
-    200,
-    await enrolment.enrol(
-      store(context, repositorySelection),
-      names(context.user.login),
-      submitted,
-    ),
-  );
+  const identifiers = names(context.user.login);
+  const { repositories, rest } = await scoped(context, identifiers);
+  const submitted = enrolment.validate(rest);
+  const scopedStore = store(context, repositories);
+  await enrolment.enrol(scopedStore, identifiers, submitted);
+  await scopedStore.restrict(identifiers);
+  return json(200, await scopedStore.status(identifiers));
 }
 
 export async function remove(context) {
@@ -71,18 +103,47 @@ export async function remove(context) {
   return empty(204);
 }
 
-function store({ fetch, params, user }, repositorySelection = null) {
+function store({ fetch, params, user }, repositories = null) {
   return Store.organization({
     fetch,
     token: user.token,
     organization: params.organization,
-    repositorySelection,
+    repositories,
   });
 }
 
-async function selection({ fetch, params, user }) {
-  const found = await installation(fetch, user.token, params.organization);
-  return found.repository_selection;
+async function scoped(context, identifiers) {
+  await installation(
+    context.fetch,
+    context.user.token,
+    context.params.organization,
+  );
+  const body = context.body;
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { repositories: null, rest: body };
+  }
+  const { repositories, ...rest } = body;
+  if (repositories !== undefined) {
+    return { repositories: validateRepositories(repositories), rest };
+  }
+  const current = await store(context).repositories(identifiers);
+  if (current === null || current.length === 0) {
+    throw new ValidationError(UNSCOPED);
+  }
+  return { repositories: current, rest };
+}
+
+function validateRepositories(value) {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    !value.every((id) => Number.isSafeInteger(id) && id > 0)
+  ) {
+    throw new ValidationError(
+      'repositories must be a non-empty list of repository ids.',
+    );
+  }
+  return [...new Set(value)];
 }
 
 async function organizationInstallations(fetch, token) {
@@ -136,14 +197,13 @@ async function describe(fetch, token, login, identifiers) {
       login,
       admin: false,
       reason: reason(status, data),
-      config: null,
-      secrets: { oauth: false, push: false, apiKey: false },
+      ...UNKNOWN,
     };
   }
-  const { config, secrets } = await Store.organization({
+  const current = await Store.organization({
     fetch,
     token,
     organization: login,
   }).status(identifiers);
-  return { login, admin: true, config, secrets };
+  return { login, admin: true, ...current };
 }

@@ -923,6 +923,12 @@
         border-color: var(--warning-border);
       }
 
+      .badge.danger {
+        color: var(--danger);
+        background: var(--danger-soft);
+        border-color: var(--danger-border);
+      }
+
       .card-body {
         border-top: 1px solid var(--border);
       }
@@ -972,6 +978,67 @@
       .card-note.warning {
         background: var(--warning-soft);
         color: var(--warning-text);
+      }
+
+      .card-note.danger {
+        border: 1px solid var(--danger-border);
+        background: var(--danger-soft);
+        color: var(--danger);
+        font-weight: 500;
+      }
+
+      .options {
+        display: grid;
+        align-content: start;
+        max-height: 264px;
+        margin-top: 10px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+
+      .options[aria-invalid='true'] {
+        border-color: var(--danger);
+      }
+
+      .options .card-loading,
+      .options .no-match {
+        padding: 12px 11px;
+      }
+
+      .options .inline-error {
+        margin: 8px;
+      }
+
+      .option {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 11px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .option:hover {
+        background: var(--surface-hover);
+      }
+
+      .option input {
+        flex: none;
+        width: 15px;
+        height: 15px;
+        margin: 0;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+
+      .option-name {
+        flex: 1;
+        min-width: 0;
+        font-family: var(--font-mono);
+        overflow-wrap: anywhere;
       }
 
       .settings-grid {
@@ -1520,8 +1587,8 @@
             <p class="notice" id="signed-out-notice" role="status" hidden></p>
             <p class="hero-lede">
               Choose which tasks Claude runs on the pull requests you open, and
-              store the Claude token they run with, per repository or for a
-              whole organization.
+              store the Claude token they run with, per repository or for the
+              organization repositories you choose.
             </p>
             <div class="hero-actions">
               <a class="button primary large" href="/auth/login">
@@ -1653,8 +1720,8 @@
               </h2>
             </div>
             <p class="group-note">
-              Defaults for your pull requests across an organization. Only
-              organization admins can change them.
+              Defaults for your pull requests in the organization repositories
+              you choose. Only organization admins can change them.
             </p>
             <div class="list" id="organization-list"></div>
             <div class="muted-note" id="organization-note" hidden></div>
@@ -1737,6 +1804,9 @@
             <span class="badge warning" data-part="token-warning" hidden
               >No Claude token</span
             >
+            <span class="badge danger" data-part="exposure-warning" hidden
+              >Token exposed</span
+            >
           </span>
           <span class="card-meta" data-part="meta"></span>
         </summary>
@@ -1745,6 +1815,41 @@
     </template>
 
     <template id="settings-template">
+      <form class="section" data-part="scope" novalidate>
+        <fieldset data-describe="repositories-hint">
+          <legend class="label">Repositories</legend>
+          <p class="hint spaced" data-id="repositories-hint">
+            Your tokens and settings are shared only with these repositories.
+            Workflows in every other repository cannot read them. Saving tokens
+            or settings applies your selection.
+          </p>
+          <div class="filter" data-part="repository-filter-field" hidden>
+            <label class="visually-hidden" data-for="repository-filter"
+              >Filter repositories</label
+            >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.5" />
+              <path d="m10.5 10.5 3 3" />
+            </svg>
+            <input
+              class="input"
+              type="search"
+              name="repository-filter"
+              data-part="repository-filter"
+              placeholder="Filter by name"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+            />
+          </div>
+          <div class="options" data-part="repository-list" tabindex="-1"></div>
+          <p
+            class="hint spaced"
+            data-part="repository-count"
+            aria-live="polite"
+          ></p>
+        </fieldset>
+      </form>
       <form class="section" data-part="tokens" novalidate>
         <div class="section-head">
           <div class="field-head">
@@ -1757,6 +1862,8 @@
           </p>
         </div>
         <div class="notes">
+          <p class="card-note danger" data-part="exposure-note" hidden></p>
+          <p class="card-note danger" data-part="api-key-note" hidden></p>
           <p class="card-note warning" data-part="token-note" hidden>
             No Claude token is set here. Without one, the workflow fails
             whenever one of your tasks applies.
@@ -1951,6 +2058,7 @@
       const SECOND = 1000;
 
       const TOKEN_KINDS = ['oauth', 'push'];
+      const SECRET_KINDS = [...TOKEN_KINDS, 'apiKey'];
       const TOKEN_NAMES = Object.freeze({
         oauth: 'Claude token',
         push: 'push token',
@@ -2282,6 +2390,18 @@
         };
       }
 
+      function repositoryIds(value) {
+        return Array.isArray(value)
+          ? value.filter((id) => Number.isSafeInteger(id) && id > 0)
+          : null;
+      }
+
+      function exposedKinds(value) {
+        return Array.isArray(value)
+          ? SECRET_KINDS.filter((kind) => value.includes(kind))
+          : null;
+      }
+
       function applyStatus(target, data) {
         target.config = normalizeConfig(data?.config);
         target.secrets = normalizeSecrets(data?.secrets);
@@ -2290,8 +2410,22 @@
             config: normalizeConfig(data?.inherited?.config),
             secrets: normalizeSecrets(data?.inherited?.secrets),
           };
+        } else {
+          target.repositories = repositoryIds(data?.repositories);
+          target.exposed = exposedKinds(data?.exposed);
         }
         target.loaded = true;
+      }
+
+      function applyScope(target, repositories, written, data) {
+        if (target.kind !== 'organization') {
+          return;
+        }
+        target.repositories = repositoryIds(data?.repositories) ?? repositories;
+        target.exposed =
+          exposedKinds(data?.exposed) ??
+          target.exposed?.filter((kind) => !written.includes(kind)) ??
+          null;
       }
 
       function repositoryTarget(item) {
@@ -2331,11 +2465,16 @@
           config: null,
           secrets: normalizeSecrets(null),
           inherited: null,
+          repositories: null,
+          exposed: null,
+          selection: new Set(),
+          options: null,
           dirty: false,
           prefix: '',
           view: null,
         };
         applyStatus(target, item);
+        target.selection = new Set(target.repositories ?? []);
         return target;
       }
 
@@ -2359,6 +2498,36 @@
           return 'unknown';
         }
         return 'missing';
+      }
+
+      function exposure(target) {
+        if (target.kind !== 'organization') {
+          return [];
+        }
+        if (target.exposed !== null) {
+          return target.exposed;
+        }
+        return target.repositories === null
+          ? TOKEN_KINDS.filter((kind) => target.secrets[kind] === true)
+          : [];
+      }
+
+      function tokenExposure(target, kinds) {
+        const tokens = kinds.filter((kind) => TOKEN_KINDS.includes(kind));
+        if (tokens.length === 0) {
+          return '';
+        }
+        const names = listNames(tokens.map((kind) => TOKEN_NAMES[kind]));
+        const [verb, pronoun] =
+          tokens.length === 1 ? ['is', 'it'] : ['are', 'them'];
+        return `Your ${names} ${verb} visible to every repository in ${target.label}, so anyone who can push a workflow to any repository there can read ${pronoun}. Choose repositories above, paste ${pronoun} again, and save to restrict ${pronoun}.`;
+      }
+
+      function apiKeyExposure(target, kinds) {
+        if (!kinds.includes('apiKey')) {
+          return '';
+        }
+        return `Your API key secret UREVIEW_API_KEY_${loginKey(state.user.login)} was set outside ureview and is visible to every repository in ${target.label}. ureview cannot rewrite it. Delete it in the organization settings, or re-create it with access for selected repositories only.`;
       }
 
       function choiceOf(config, name) {
@@ -2530,6 +2699,7 @@
           body: part(root, 'body'),
           badge: part(root, 'badge'),
           tokenWarning: part(root, 'token-warning'),
+          exposureWarning: part(root, 'exposure-warning'),
           meta: part(root, 'meta'),
         };
         renderTitle(target, part(root, 'title'));
@@ -2548,10 +2718,18 @@
         const fragment = page.settings.content.cloneNode(true);
         const view = target.view;
         Object.assign(view, {
+          scope: part(fragment, 'scope'),
+          repositoryFilterField: part(fragment, 'repository-filter-field'),
+          repositoryFilter: part(fragment, 'repository-filter'),
+          repositoryList: part(fragment, 'repository-list'),
+          repositoryCount: part(fragment, 'repository-count'),
+          repositoryNoMatch: null,
           settings: part(fragment, 'settings'),
           tokens: part(fragment, 'tokens'),
           note: part(fragment, 'note'),
           tokenNote: part(fragment, 'token-note'),
+          exposureNote: part(fragment, 'exposure-note'),
+          apiKeyNote: part(fragment, 'api-key-note'),
           oauthChip: part(fragment, 'oauth-chip'),
           pushChip: part(fragment, 'push-chip'),
           apiKeyChip: part(fragment, 'api-key-chip'),
@@ -2564,6 +2742,9 @@
         renderFlags(part(fragment, 'flags'), target.prefix);
         renderSeverities(part(fragment, 'severities'));
         renderNames(target, part(fragment, 'names'));
+        if (target.kind !== 'organization') {
+          view.scope.remove();
+        }
         linkFields(fragment, target.prefix);
 
         view.settings.addEventListener('input', () => {
@@ -2588,6 +2769,156 @@
         view.body.replaceChildren(fragment);
         renderSummary(target);
         fillSettings(target);
+        if (target.kind === 'organization') {
+          mountScope(target);
+        }
+      }
+
+      function mountScope(target) {
+        const view = target.view;
+        view.scope.addEventListener('submit', (event) => {
+          event.preventDefault();
+        });
+        view.scope.addEventListener('change', (event) => {
+          if (event.target.name !== 'repository') {
+            return;
+          }
+          const id = Number(event.target.value);
+          if (event.target.checked) {
+            target.selection.add(id);
+          } else {
+            target.selection.delete(id);
+          }
+          view.repositoryList.removeAttribute('aria-invalid');
+          renderCount(target);
+        });
+        view.repositoryFilter.addEventListener('input', () =>
+          filterOptions(target),
+        );
+        renderCount(target);
+        loadOptions(target);
+      }
+
+      function pending(text) {
+        return element(
+          'p',
+          { className: 'card-loading', attributes: { role: 'status' } },
+          [
+            element('span', {
+              className: 'spinner',
+              attributes: { 'aria-hidden': 'true' },
+            }),
+            text,
+          ],
+        );
+      }
+
+      function isOption(item) {
+        return (
+          isObject(item) &&
+          Number.isSafeInteger(item.id) &&
+          typeof item.name === 'string'
+        );
+      }
+
+      async function loadOptions(target) {
+        const view = target.view;
+        view.repositoryFilterField.hidden = true;
+        view.repositoryList.replaceChildren(pending('Loading repositories'));
+        try {
+          const data = await request('GET', `${target.path}/repositories`);
+          target.options = Array.isArray(data?.repositories)
+            ? data.repositories.filter(isOption).map((item) => ({
+                id: item.id,
+                name: item.name,
+                private: item.private === true,
+              }))
+            : [];
+          renderOptions(target);
+        } catch (error) {
+          if (!(error instanceof RequestError)) {
+            throw error;
+          }
+          if (error.status !== 401) {
+            view.repositoryList.replaceChildren(
+              failure(error, () => loadOptions(target), target),
+            );
+          }
+        }
+      }
+
+      function repositoryOption(option, checked) {
+        const input = element('input', {
+          attributes: {
+            type: 'checkbox',
+            name: 'repository',
+            value: String(option.id),
+          },
+        });
+        input.checked = checked;
+        return element(
+          'label',
+          {
+            className: 'option',
+            attributes: { 'data-search': option.name.toLowerCase() },
+          },
+          [
+            input,
+            element('span', { className: 'option-name', text: option.name }),
+            ...(option.private
+              ? [element('span', { className: 'chip', text: 'private' })]
+              : []),
+          ],
+        );
+      }
+
+      function renderOptions(target) {
+        const view = target.view;
+        const options = target.options;
+        view.repositoryFilter.value = '';
+        view.repositoryFilterField.hidden = options.length < 2;
+        if (options.length === 0) {
+          view.repositoryNoMatch = null;
+          view.repositoryList.replaceChildren(
+            element('p', {
+              className: 'no-match',
+              text: `ureview cannot see any ${target.label} repositories. Install it on the repositories you want it to run in.`,
+            }),
+          );
+          return;
+        }
+        view.repositoryNoMatch = element('p', {
+          className: 'no-match',
+          attributes: { role: 'status' },
+        });
+        view.repositoryList.replaceChildren(
+          ...options.map((option) =>
+            repositoryOption(option, target.selection.has(option.id)),
+          ),
+          view.repositoryNoMatch,
+        );
+        filterOptions(target);
+      }
+
+      function filterOptions(target) {
+        const view = target.view;
+        if (view.repositoryNoMatch === null) {
+          return;
+        }
+        const text = view.repositoryFilter.value.trim();
+        const query = text.toLowerCase();
+        let visible = 0;
+        for (const node of view.repositoryList.querySelectorAll('.option')) {
+          node.hidden = !node.dataset.search.includes(query);
+          visible += node.hidden ? 0 : 1;
+        }
+        view.repositoryNoMatch.hidden = visible > 0;
+        view.repositoryNoMatch.textContent =
+          visible > 0 ? '' : `No repositories match “${text}”.`;
+      }
+
+      function renderCount(target) {
+        target.view.repositoryCount.textContent = `${target.selection.size} selected`;
       }
 
       async function load(target) {
@@ -2596,19 +2927,7 @@
         }
         target.loading = true;
         const body = target.view.body;
-        body.replaceChildren(
-          element(
-            'p',
-            { className: 'card-loading', attributes: { role: 'status' } },
-            [
-              element('span', {
-                className: 'spinner',
-                attributes: { 'aria-hidden': 'true' },
-              }),
-              'Loading settings',
-            ],
-          ),
-        );
+        body.replaceChildren(pending('Loading settings'));
         try {
           applyStatus(target, await request('GET', target.path));
           mount(target);
@@ -2646,7 +2965,7 @@
 
       function noteFor(target) {
         if (target.kind === 'organization') {
-          return `Applies to your pull requests in every ${target.label} repository where you have no repository settings.`;
+          return `Applies to your pull requests in the ${target.label} repositories you selected above, where you have no repository settings.`;
         }
         if (target.config === null && target.inherited.config !== null) {
           return `Using your ${target.owner} organization settings. Saving here creates repository settings that replace them.`;
@@ -2689,9 +3008,11 @@
         const oauth = tokenState(target, 'oauth');
         const push = tokenState(target, 'push');
         const missingToken = config !== null && oauth === 'missing';
+        const exposed = exposure(target);
 
         renderBadge(target);
         view.tokenWarning.hidden = !missingToken;
+        view.exposureWarning.hidden = exposed.length === 0;
         view.meta.replaceChildren(
           ...(config === null
             ? []
@@ -2722,6 +3043,13 @@
         view.note.hidden = note === '';
         view.note.textContent = note;
         view.tokenNote.hidden = !missingToken;
+        for (const [node, text] of [
+          [view.exposureNote, tokenExposure(target, exposed)],
+          [view.apiKeyNote, apiKeyExposure(target, exposed)],
+        ]) {
+          node.hidden = text === '';
+          node.textContent = text;
+        }
         view.remove.hidden =
           target.config === null &&
           target.secrets.oauth === false &&
@@ -2810,6 +3138,22 @@
         );
       }
 
+      function requireRepositories(target) {
+        if (target.kind !== 'organization' || target.selection.size > 0) {
+          return;
+        }
+        throw new FieldError(
+          'Choose at least one repository.',
+          target.view.repositoryList,
+        );
+      }
+
+      function scope(target) {
+        return target.kind === 'organization'
+          ? { repositories: [...target.selection] }
+          : {};
+      }
+
       function reportFieldError(error, status) {
         if (error.input.type !== 'checkbox') {
           error.input.setAttribute('aria-invalid', 'true');
@@ -2857,6 +3201,7 @@
           config = readSettings(view.settings);
           tokens = readTokens(view.tokens);
           requireToken(target, tokens);
+          requireRepositories(target);
         } catch (error) {
           if (error instanceof FieldError) {
             reportFieldError(error, view.settingsStatus);
@@ -2865,13 +3210,14 @@
           throw error;
         }
         const enrolling = target.config === null;
+        const scoped = scope(target);
         setStatus(view.settingsStatus, '', '');
         setBusy(view.submit, true, 'Saving…');
         try {
           if (enrolling || Object.keys(tokens).length > 0) {
-            await enrol(target, config, tokens, enrolling);
+            await enrol(target, config, tokens, scoped, enrolling);
           } else {
-            await updateSettings(target, config);
+            await updateSettings(target, config, scoped);
           }
         } finally {
           setBusy(view.submit, false);
@@ -2879,12 +3225,16 @@
         }
       }
 
-      async function updateSettings(target, config) {
+      async function updateSettings(target, config, scoped) {
         const status = target.view.settingsStatus;
         try {
-          const data = await request('PUT', `${target.path}/config`, config);
+          const data = await request('PUT', `${target.path}/config`, {
+            ...config,
+            ...scoped,
+          });
           target.config =
             normalizeConfig(data?.config) ?? normalizeConfig(config);
+          applyScope(target, scoped.repositories, [], data);
           renderSummary(target);
           fillSettings(target);
           setStatus(status, 'success', 'Settings saved.');
@@ -2894,13 +3244,14 @@
         }
       }
 
-      async function enrol(target, config, tokens, enrolling) {
+      async function enrol(target, config, tokens, scoped, enrolling) {
         const view = target.view;
         let data;
         try {
           data = await request('PUT', `${target.path}/enrolment`, {
             config,
             tokens,
+            ...scoped,
           });
         } catch (error) {
           if (!(error instanceof RequestError)) {
@@ -2919,6 +3270,7 @@
         target.config =
           normalizeConfig(data?.config) ?? normalizeConfig(config);
         target.secrets = normalizeSecrets(data?.secrets);
+        applyScope(target, scoped.repositories, Object.keys(tokens), data);
         renderSummary(target);
         fillSettings(target);
         setStatus(
@@ -3004,10 +3356,21 @@
           );
           return;
         }
+        try {
+          requireRepositories(target);
+        } catch (error) {
+          reportFieldError(error, view.tokensStatus);
+          return;
+        }
+        const scoped = scope(target);
         setStatus(view.tokensStatus, '', '');
         setBusy(button, true, 'Saving…');
         try {
-          await request('PUT', `${target.path}/tokens`, tokens);
+          await request('PUT', `${target.path}/tokens`, {
+            ...tokens,
+            ...scoped,
+          });
+          applyScope(target, scoped.repositories, Object.keys(tokens), null);
           applyTokens(target, tokens);
           setStatus(view.tokensStatus, 'success', savedTokensMessage(tokens));
           propagate(target);
@@ -3020,7 +3383,7 @@
 
       function removalQuestion(target) {
         if (target.kind === 'organization') {
-          return `Unenrol from the ${target.label} organization? This deletes your organization-wide ureview settings and tokens. Repository settings stay in place.`;
+          return `Unenrol from the ${target.label} organization? This deletes your ureview settings and tokens for this organization, including any API key secret. Repository settings stay in place.`;
         }
         const fallback =
           target.inherited.config !== null
@@ -3040,6 +3403,10 @@
           await request('DELETE', target.path);
           target.config = null;
           target.secrets = normalizeSecrets(null);
+          if (target.kind === 'organization') {
+            target.repositories = null;
+            target.exposed = [];
+          }
           view.tokens.reset();
           renderSummary(target);
           fillSettings(target);
@@ -3053,19 +3420,47 @@
         }
       }
 
+      function scopedNames(organization) {
+        if (
+          organization.repositories === null ||
+          organization.options === null
+        ) {
+          return null;
+        }
+        const ids = new Set(organization.repositories);
+        return new Set(
+          organization.options
+            .filter((option) => ids.has(option.id))
+            .map((option) => option.name.toLowerCase()),
+        );
+      }
+
+      function inheritedFrom(organization, names, repository) {
+        const scoped =
+          names === null || names.has(repository.name.toLowerCase());
+        const exposed = organization.exposed ?? [];
+        return {
+          config: scoped ? organization.config : null,
+          secrets: Object.fromEntries(
+            Object.entries(organization.secrets).map(([kind, set]) => [
+              kind,
+              set && (scoped || exposed.includes(kind)),
+            ]),
+          ),
+        };
+      }
+
       function propagate(organization) {
         if (organization.kind !== 'organization') {
           return;
         }
         const login = organization.label.toLowerCase();
+        const names = scopedNames(organization);
         for (const repository of state.repositories) {
           if (repository.owner.toLowerCase() !== login || !repository.loaded) {
             continue;
           }
-          repository.inherited = {
-            config: organization.config,
-            secrets: { ...organization.secrets },
-          };
+          repository.inherited = inheritedFrom(organization, names, repository);
           renderSummary(repository);
           if (repository.config === null && !repository.dirty) {
             fillSettings(repository);

@@ -295,18 +295,21 @@ Self-serve at https://ureview.fra.appwrite.run:
 
 1. Sign in with GitHub.
 2. Pick a repository you can push to, or an organization you administer. [Install ureview](https://github.com/apps/ureview-code-reviewer/installations/new) there first if it is not listed.
-3. Set the flags, severities, model, and effort.
-4. Run `claude setup-token` in a terminal, paste the token, and save.
+3. For an organization, choose the repositories ureview runs in. Your settings and tokens are shared with those repositories only.
+4. Set the flags, severities, model, and effort.
+5. Run `claude setup-token` in a terminal, paste the token, and save.
 
 ureview writes only your own `UREVIEW_*_<LOGIN>` names.
 
 Admins can do the same with `gh`:
 
 ```sh
-gh variable set UREVIEW_<LOGIN> [--org O --visibility all | -R o/r] --body '{"review":true,"improvement":false}'
-gh secret set UREVIEW_OAUTH_TOKEN_<LOGIN> [--org O --visibility all | -R o/r]
-gh secret set UREVIEW_PUSH_TOKEN_<LOGIN> [--org O --visibility all | -R o/r]
+gh variable set UREVIEW_<LOGIN> [--org O --repos r1,r2 | -R o/r] --body '{"review":true,"improvement":false}'
+gh secret set UREVIEW_OAUTH_TOKEN_<LOGIN> [--org O --repos r1,r2 | -R o/r]
+gh secret set UREVIEW_PUSH_TOKEN_<LOGIN> [--org O --repos r1,r2 | -R o/r]
 ```
+
+`--repos` sets the visibility to selected. Keep the variable and the secrets on the same repositories: a repository that sees the variable but not the token fails the plan job.
 
 `gh secret set` without `--body` prompts for the value, which keeps it out of shell history.
 
@@ -315,8 +318,9 @@ ureview does not log in to Claude for you. `claude setup-token` is the sanctione
 ### Exposure
 
 - Anyone who can push a workflow to a repository can read that repository's secrets, per-user tokens included.
-- Organization secrets with `visibility: all` reach every repository in the organization, and everyone who can push to any of them.
-- Where teammates do not trust each other with their tokens, prefer repository-level secrets, or `--visibility selected --repos …`.
+- ureview writes organization secrets and the variable with visibility `selected`, shared only with the repositories you choose, so only people who can push to one of those can read your token.
+- Enrolments made before this used visibility `all`, which reaches every repository in the organization and everyone who can push to any of them. ureview flags them as exposed. GitHub cannot narrow a secret without its value, so choose repositories, paste the token again, and save. An API key set by hand stays as it was set: delete it or set it again with `--repos`.
+- Choose the fewest repositories that need ureview, and prefer repository-level secrets where even those collaborators should not hold your token.
 - Whether organization secrets and variables reach private repositories depends on the organization's GitHub plan. Set them per repository where they do not.
 
 ## Security review
