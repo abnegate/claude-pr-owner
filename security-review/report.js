@@ -4,6 +4,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const nodePath = require('path');
+const zlib = require('zlib');
 
 const Sink = Object.freeze({
   CodeScanning: 'code-scanning',
@@ -27,13 +28,14 @@ const SEVERITY_SCORE = { critical: '9.5', high: '8.0', medium: '5.5', low: '3.0'
 const SEVERITY_LEVEL = { critical: 'error', high: 'error', medium: 'warning', low: 'note' };
 
 const {
+  BRANCH,
   GITHUB_API_URL,
   GITHUB_OUTPUT,
-  GITHUB_REPOSITORY,
   GITHUB_SERVER_URL,
   GITHUB_TOKEN,
   HEAD_SHA,
   SINK,
+  TARGET_REPOSITORY,
   WORK,
 } = process.env;
 
@@ -117,7 +119,7 @@ async function paginate(path) {
 async function alertsIn(state) {
   try {
     return await paginate(
-      `/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?tool_name=${encodeURIComponent(TOOL)}&state=${state}`,
+      `/repos/${TARGET_REPOSITORY}/code-scanning/alerts?tool_name=${encodeURIComponent(TOOL)}&state=${state}`,
     );
   } catch (error) {
     switch (error.status) {
@@ -125,7 +127,7 @@ async function alertsIn(state) {
         return [];
       case 403:
         throw new Error(
-          `Code scanning is not enabled for ${GITHUB_REPOSITORY}, so findings have nowhere private to go. Enable code scanning, or pass sink: issues on a private repository.`,
+          `Code scanning is not enabled for ${TARGET_REPOSITORY}, so findings have nowhere private to go. Enable code scanning, or pass sink: issues on a private repository.`,
         );
       default:
         throw error;
@@ -156,7 +158,7 @@ async function knownFromCodeScanning() {
 
 async function knownFromIssues() {
   const issues = await paginate(
-    `/repos/${GITHUB_REPOSITORY}/issues?labels=${LABEL}&state=all`,
+    `/repos/${TARGET_REPOSITORY}/issues?labels=${LABEL}&state=all`,
   );
   return issues
     .filter((issue) => !issue.pull_request)
@@ -335,7 +337,7 @@ function sarifResult(id, severity, message, file, line, fingerprint) {
   };
 }
 
-function publishCodeScanning(findings, resolved, tracked) {
+async function publishCodeScanning(findings, resolved, tracked) {
   const rules = new Map();
   const results = [];
   const emitted = new Set();
@@ -383,6 +385,7 @@ function publishCodeScanning(findings, resolved, tracked) {
             rules: [...rules.values()],
           },
         },
+        automationDetails: { id: 'security-review/' },
         results,
       },
     ],
@@ -392,11 +395,19 @@ function publishCodeScanning(findings, resolved, tracked) {
     (entry) => entry.state === 'open' && resolved.has(entry.fingerprint),
   ).length;
   console.log(`New alerts: ${created}. Kept: ${kept}. Resolved: ${closed}.`);
-  setOutput('upload', created > 0 || closed > 0);
+  if (created === 0 && closed === 0) {
+    return;
+  }
+  await github('POST', `/repos/${TARGET_REPOSITORY}/code-scanning/sarifs`, {
+    commit_sha: HEAD_SHA,
+    ref: `refs/heads/${BRANCH}`,
+    sarif: zlib.gzipSync(JSON.stringify(sarif)).toString('base64'),
+  });
+  console.log('Uploaded the code scanning analysis.');
 }
 
 function issueBody(finding, fingerprint) {
-  const location = `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${HEAD_SHA}/${finding.file}#L${finding.line}`;
+  const location = `${GITHUB_SERVER_URL}/${TARGET_REPOSITORY}/blob/${HEAD_SHA}/${finding.file}#L${finding.line}`;
   return [
     `**Severity:** ${finding.severity} · **Confidence:** ${finding.confidence} · **${finding.cwe}** · **Reported by:** ${finding.sources.join(', ')}`,
     `**Location:** [\`${finding.file}:${finding.line}\`](${location}) in \`${finding.symbol}\``,
@@ -421,7 +432,7 @@ async function publishIssues(findings, resolved, tracked) {
       continue;
     }
     seen.add(fingerprint);
-    await github('POST', `/repos/${GITHUB_REPOSITORY}/issues`, {
+    await github('POST', `/repos/${TARGET_REPOSITORY}/issues`, {
       title: `[${finding.severity}] ${finding.title}`,
       body: issueBody(finding, fingerprint),
       labels: [LABEL],
@@ -434,14 +445,14 @@ async function publishIssues(findings, resolved, tracked) {
   );
   for (const entry of fixed) {
     const comments = await paginate(
-      `/repos/${GITHUB_REPOSITORY}/issues/${entry.number}/comments`,
+      `/repos/${TARGET_REPOSITORY}/issues/${entry.number}/comments`,
     );
     if (comments.some((comment) => comment.body?.includes(RESOLVED_MARKER))) {
       continue;
     }
     await github(
       'POST',
-      `/repos/${GITHUB_REPOSITORY}/issues/${entry.number}/comments`,
+      `/repos/${TARGET_REPOSITORY}/issues/${entry.number}/comments`,
       {
         body: `The security review no longer finds this defect at ${HEAD_SHA}. Close this issue once confirmed.\n\n${RESOLVED_MARKER}`,
       },
@@ -461,7 +472,7 @@ async function publish(directory) {
   const tracked = readJson(workPath('known.json')) ?? [];
   console.log(`Confirmed findings: ${findings.length} from ${triages.length} triage runs.`);
   if (SINK === Sink.CodeScanning) {
-    publishCodeScanning(findings, resolved, tracked);
+    await publishCodeScanning(findings, resolved, tracked);
     return;
   }
   await publishIssues(findings, resolved, tracked);
@@ -475,8 +486,10 @@ async function main() {
   switch (command) {
     case 'known':
     case 'publish':
-      if (!Object.values(Sink).includes(SINK)) {
-        throw new Error(`SINK must be one of ${Object.values(Sink).join(', ')}.`);
+      if (!Object.values(Sink).includes(SINK) || !TARGET_REPOSITORY) {
+        throw new Error(
+          `SINK must be one of ${Object.values(Sink).join(', ')}, and TARGET_REPOSITORY must be set.`,
+        );
       }
       return command === 'known' ? known() : publish(rest[0]);
     case 'areas':

@@ -3,6 +3,17 @@ name: ureview security review
 on:
   workflow_call:
     inputs:
+      repository:
+        description: Repository to review, as owner/name.
+        type: string
+        required: true
+      client_id:
+        description: >-
+          Client ID of a GitHub App installed on the repository with contents read, issues
+          write, and code scanning alerts write. Its private key is the app_private_key secret.
+          Empty uses the caller's GITHUB_TOKEN, which only reaches the caller's own repository.
+        type: string
+        default: ''
       mode:
         description: >-
           incremental reviews the commits merged since the last successful run.
@@ -22,7 +33,9 @@ on:
         type: string
         default: ''
       project:
-        description: Path to a Markdown file describing the system and the defects that matter most in it.
+        description: >-
+          Path, in the calling repository, to a Markdown file describing the reviewed
+          system and the defects that matter most in it.
         type: string
         default: .github/security-review.md
       areas:
@@ -83,6 +96,8 @@ on:
         required: false
       openai_api_key:
         required: false
+      app_private_key:
+        required: false
 
 permissions: {}
 
@@ -104,10 +119,48 @@ jobs:
       reviews: ${{ steps.plan.outputs.reviews }}
       areas: ${{ steps.plan.outputs.areas }}
       triage_provider: ${{ steps.plan.outputs.triage_provider }}
+      owner: ${{ steps.target.outputs.owner }}
+      name: ${{ steps.target.outputs.name }}
+      branch: ${{ steps.plan.outputs.branch }}
     steps:
+      - name: Resolve repository
+        id: target
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+        run: |
+          if [[ ! "$REPOSITORY" =~ ^([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)$ ]]; then
+            echo "::error::repository must be owner/name, not '$REPOSITORY'."
+            exit 1
+          fi
+          {
+            echo "owner=${BASH_REMATCH[1]}"
+            echo "name=${BASH_REMATCH[2]}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create token
+        id: token
+        if: inputs.client_id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-security-events: write
+
+      - name: Check out caller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: caller
+          persist-credentials: false
+
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          repository: ${{ inputs.repository }}
+          token: ${{ steps.token.outputs.token || github.token }}
           path: repository
           fetch-depth: 0
           persist-credentials: false
@@ -115,8 +168,8 @@ jobs:
       - name: Check out ureview
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: ${{ job.workflow_repository || 'abnegate/claude-pr-owner' }}
-          ref: ${{ job.workflow_sha || 'main' }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: ureview
           persist-credentials: false
 
@@ -124,7 +177,8 @@ jobs:
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_TOKEN: ${{ steps.token.outputs.token || github.token }}
+          TARGET: ${{ inputs.repository }}
           MODE: ${{ inputs.mode }}
           SINCE: ${{ inputs.since }}
           HISTORY: ${{ inputs.history }}
@@ -214,7 +268,7 @@ jobs:
 
           sink=$SINK_INPUT
           if [[ -z "$sink" ]]; then
-            if [[ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" == true ]]; then
+            if [[ "$(GH_TOKEN="$TARGET_TOKEN" gh api "repos/$TARGET" --jq .private)" == true ]]; then
               sink=issues
             else
               sink=code-scanning
@@ -226,6 +280,7 @@ jobs:
           head=$(git rev-parse HEAD)
           {
             echo "head=$head"
+            echo "branch=$(git rev-parse --abbrev-ref HEAD)"
             echo "sink=$sink"
             echo "effort=$effort"
             echo "budget=$budget"
@@ -242,13 +297,16 @@ jobs:
               for workflow in "${workflows[@]}"; do
                 workflow="${workflow//[[:space:]]/}"
                 [[ -n "$workflow" ]] || continue
-                run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch "$GITHUB_REF_NAME" --status success --limit 1 --json createdAt,headSha --jq '.[0] | select(.) | "\(.createdAt) \(.headSha)"' || true)
+                run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch "$GITHUB_REF_NAME" --status success --limit 1 --json createdAt,databaseId --jq '.[0] | select(.) | "\(.createdAt) \(.databaseId)"' || true)
                 if [[ -n "$run" && "$run" > "$newest" ]]; then
                   newest=$run
                 fi
               done
-              if [[ -n "$newest" ]] && git merge-base --is-ancestor "${newest#* }" "$head" 2> /dev/null; then
-                base=${newest#* }
+              if [[ -n "$newest" ]] && gh run download "${newest#* }" --repo "$GITHUB_REPOSITORY" --name security-review-head --dir "$RUNNER_TEMP/previous" > /dev/null 2>&1; then
+                previous=$(tr -dc '0-9a-f' < "$RUNNER_TEMP/previous/head")
+                if git merge-base --is-ancestor "$previous" "$head" 2> /dev/null; then
+                  base=$previous
+                fi
               fi
             fi
             if [[ -z "$base" ]]; then
@@ -282,14 +340,14 @@ jobs:
           fi
           cd ..
 
-          if [[ -f "repository/$PROJECT" ]]; then
-            cp "repository/$PROJECT" "$work/project.md"
+          if [[ -f "caller/$PROJECT" ]]; then
+            cp "caller/$PROJECT" "$work/project.md"
           else
             echo "::warning::$PROJECT does not exist, so reviewers get no project description."
             echo 'No project description was provided.' > "$work/project.md"
           fi
 
-          SINK="$sink" node ureview/security-review/report.js known
+          SINK="$sink" GITHUB_TOKEN="$TARGET_TOKEN" TARGET_REPOSITORY="$TARGET" node ureview/security-review/report.js known
           printf '%s\n' "$areas" > "$work/areas.txt"
           node ureview/security-review/report.js areas "$work/areas.txt"
 
@@ -311,6 +369,20 @@ jobs:
             echo "changed=true"
           } >> "$GITHUB_OUTPUT"
           echo "Planned $(jq length <<< "$reviews") reviews across $(jq length "$work/areas.json") areas."
+
+      - name: Record the reviewed commit
+        if: steps.plan.outputs.head != ''
+        env:
+          HEAD_SHA: ${{ steps.plan.outputs.head }}
+        run: printf '%s\n' "$HEAD_SHA" > "$RUNNER_TEMP/head"
+
+      - name: Upload the reviewed commit
+        if: steps.plan.outputs.head != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-review-head
+          path: ${{ runner.temp }}/head
+          retention-days: 90
 
       - name: Pack context
         if: steps.plan.outputs.changed == 'true'
@@ -345,9 +417,24 @@ jobs:
       MODE: ${{ inputs.mode }}
       HEAD_SHA: ${{ needs.plan.outputs.head }}
     steps:
+      - name: Create token
+        id: token
+        if: inputs.client_id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ needs.plan.outputs.owner }}
+          repositories: ${{ needs.plan.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-security-events: write
+
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          repository: ${{ inputs.repository }}
+          token: ${{ steps.token.outputs.token || github.token }}
           path: repository
           ref: ${{ needs.plan.outputs.head }}
           fetch-depth: 0
@@ -356,8 +443,8 @@ jobs:
       - name: Check out ureview
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: ${{ job.workflow_repository || 'abnegate/claude-pr-owner' }}
-          ref: ${{ job.workflow_sha || 'main' }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: ureview
           persist-credentials: false
 
@@ -476,9 +563,24 @@ jobs:
       MODEL: ${{ inputs.triage_model }}
       AREA: ${{ matrix.area }}
     steps:
+      - name: Create token
+        id: token
+        if: inputs.client_id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ needs.plan.outputs.owner }}
+          repositories: ${{ needs.plan.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-security-events: write
+
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          repository: ${{ inputs.repository }}
+          token: ${{ steps.token.outputs.token || github.token }}
           path: repository
           ref: ${{ needs.plan.outputs.head }}
           fetch-depth: 0
@@ -487,8 +589,8 @@ jobs:
       - name: Check out ureview
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: ${{ job.workflow_repository || 'abnegate/claude-pr-owner' }}
-          ref: ${{ job.workflow_sha || 'main' }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: ureview
           persist-credentials: false
 
@@ -613,18 +715,25 @@ jobs:
       SINK: ${{ needs.plan.outputs.sink }}
       HEAD_SHA: ${{ needs.plan.outputs.head }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Create token
+        id: token
+        if: inputs.client_id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          ref: ${{ needs.plan.outputs.head }}
-          persist-credentials: false
+          client-id: ${{ inputs.client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ needs.plan.outputs.owner }}
+          repositories: ${{ needs.plan.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-security-events: write
 
       - name: Check out ureview
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: ${{ job.workflow_repository || 'abnegate/claude-pr-owner' }}
-          ref: ${{ job.workflow_sha || 'main' }}
-          path: .ureview
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ureview
           persist-credentials: false
 
       - name: Download context
@@ -644,23 +753,17 @@ jobs:
           ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
         run: |
           set -euo pipefail
-          .ureview/security-review/artifact.sh unpack "$RUNNER_TEMP/context.enc" "$RUNNER_TEMP/security-review"
+          ureview/security-review/artifact.sh unpack "$RUNNER_TEMP/context.enc" "$RUNNER_TEMP/security-review"
           echo "WORK=$RUNNER_TEMP/security-review" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/triage"
           for file in "$RUNNER_TEMP"/triages/*/triage.enc; do
             [[ -f "$file" ]] || continue
-            .ureview/security-review/artifact.sh unpack "$file" "$RUNNER_TEMP/triage"
+            ureview/security-review/artifact.sh unpack "$file" "$RUNNER_TEMP/triage"
           done
 
       - name: Publish findings
-        id: publish
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node .ureview/security-review/report.js publish "$RUNNER_TEMP/triage"
-
-      - name: Upload alerts
-        if: steps.publish.outputs.upload == 'true'
-        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7 # v4.35.3
-        with:
-          sarif_file: ${{ runner.temp }}/security-review/security-review.sarif
-          category: security-review
+          GITHUB_TOKEN: ${{ steps.token.outputs.token || github.token }}
+          TARGET_REPOSITORY: ${{ inputs.repository }}
+          BRANCH: ${{ needs.plan.outputs.branch }}
+        run: node ureview/security-review/report.js publish "$RUNNER_TEMP/triage"
