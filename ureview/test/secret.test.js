@@ -80,6 +80,57 @@ describe('validateTokens', () => {
     });
   });
 
+  it('accepts an Anthropic API key', () => {
+    assert.deepEqual(validateTokens({ apiKey: 'sk-ant-api03-key' }), {
+      apiKey: 'sk-ant-api03-key',
+    });
+  });
+
+  it('accepts an API key alongside both tokens', () => {
+    assert.deepEqual(
+      validateTokens({
+        oauth: 'sk-ant-oat01-token',
+        apiKey: ' sk-ant-api03-key\n',
+        push: 'ghp_token',
+      }),
+      {
+        oauth: 'sk-ant-oat01-token',
+        apiKey: 'sk-ant-api03-key',
+        push: 'ghp_token',
+      },
+    );
+  });
+
+  for (const value of [
+    'sk-ant-oat01-token',
+    'ghp_token',
+    'github_pat_token',
+    'SK-ANT-API03-key',
+    'key-sk-ant-api03',
+    'sk-ant-ap',
+  ]) {
+    it(`rejects ${JSON.stringify(value)} as an API key`, () => {
+      assert.throws(() => validateTokens({ apiKey: value }), {
+        name: 'ValidationError',
+        message:
+          'apiKey must be an Anthropic API key starting with sk-ant-api.',
+      });
+    });
+  }
+
+  it('drops an empty API key', () => {
+    assert.deepEqual(validateTokens({ apiKey: ' ', push: 'ghp_token' }), {
+      push: 'ghp_token',
+    });
+  });
+
+  it('rejects an API key with whitespace inside', () => {
+    assert.throws(
+      () => validateTokens({ apiKey: 'sk-ant-api03 key' }),
+      ValidationError,
+    );
+  });
+
   it('accepts both tokens', () => {
     assert.deepEqual(
       validateTokens({ oauth: 'sk-ant-oat01-token', push: 'ghp_token' }),
@@ -146,7 +197,8 @@ describe('validateTokens', () => {
   }
 
   for (const key of [
-    'apiKey',
+    'api_key',
+    'ApiKey',
     'name',
     'UREVIEW_OAUTH_TOKEN_OTHER',
     'variable',
@@ -163,6 +215,7 @@ describe('validateTokens', () => {
   for (const value of [5, null, true, {}, ['token']]) {
     it(`rejects the non-string value ${JSON.stringify(value)}`, () => {
       assert.throws(() => validateTokens({ oauth: value }), ValidationError);
+      assert.throws(() => validateTokens({ apiKey: value }), ValidationError);
       assert.throws(() => validateTokens({ push: value }), ValidationError);
     });
   }
@@ -184,11 +237,12 @@ describe('validateTokens', () => {
     { oauth: '' },
     { push: '   ' },
     { oauth: '\n', push: '' },
+    { apiKey: '  ' },
   ]) {
     it(`asks for a token when nothing remains in ${JSON.stringify(body)}`, () => {
       assert.throws(() => validateTokens(body), {
         name: 'ValidationError',
-        message: 'Provide oauth or push.',
+        message: 'Provide oauth, apiKey or push.',
       });
       assert.throws(() => validateTokens(body), ValidationError);
     });
@@ -203,7 +257,17 @@ describe('validateTokens', () => {
       validateTokens({ push: ' github_pat_x ' }, { required: false }),
       { push: 'github_pat_x' },
     );
-    for (const body of [undefined, null, [], { apiKey: 'sk-ant-api' }]) {
+    assert.deepEqual(
+      validateTokens({ apiKey: 'sk-ant-api03-key' }, { required: false }),
+      { apiKey: 'sk-ant-api03-key' },
+    );
+    for (const body of [
+      undefined,
+      null,
+      [],
+      { apiKey: 'sk-ant-oat01-token' },
+      { token: 'sk-ant-api03-key' },
+    ]) {
       assert.throws(
         () => validateTokens(body, { required: false }),
         ValidationError,

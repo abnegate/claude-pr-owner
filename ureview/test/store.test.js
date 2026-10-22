@@ -750,6 +750,37 @@ describe('Store.saveSecrets', () => {
     );
   });
 
+  test('seals an API key into its own secret', async () => {
+    const pair = await keypair();
+    const { fetch, calls } = mockFetch({
+      [`GET ${repositoryBase}/secrets/public-key`]: {
+        data: { key_id: 'key-1', key: pair.encoded },
+      },
+      [`PUT ${repositoryBase}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
+        status: 201,
+      },
+    });
+    await repository(fetch).saveSecrets(names, { apiKey: 'sk-ant-api03-key' });
+    assert.deepEqual(keys(calls), [
+      `GET ${repositoryBase}/secrets/public-key`,
+      `PUT ${repositoryBase}/secrets/UREVIEW_API_KEY_ABNEGATE`,
+    ]);
+    assert.deepEqual(Object.keys(calls[1].body).sort(), [
+      'encrypted_value',
+      'key_id',
+    ]);
+    assert.equal(
+      decrypt(calls[1].body.encrypted_value, pair),
+      'sk-ant-api03-key',
+    );
+  });
+
+  test('writes nothing when no token is provided', async () => {
+    const { fetch, calls } = mockFetch({});
+    await repository(fetch).saveSecrets(names, {});
+    assert.deepEqual(calls, []);
+  });
+
   test('never reads an existing repository secret before writing it', async () => {
     const pair = await keypair();
     const { fetch, calls } = mockFetch({
@@ -811,18 +842,49 @@ describe('Store.saveSecrets', () => {
         [`PUT ${organizationBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: {
           status: 201,
         },
+        [`PUT ${organizationBase}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
+          status: 201,
+        },
       }),
     );
     await organization(fetch, [42]).saveSecrets(names, {
       oauth: 'sk-ant-oat01-org',
+      apiKey: 'sk-ant-api03-org',
       push: 'github_pat_org',
     });
     const puts = calls.filter((call) => call.method === 'PUT');
-    assert.equal(puts.length, 2);
+    assert.deepEqual(keys(puts).sort(), [
+      `PUT ${organizationBase}/secrets/UREVIEW_API_KEY_ABNEGATE`,
+      `PUT ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
+      `PUT ${organizationBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`,
+    ]);
     for (const put of puts) {
       assert.equal(put.body.visibility, 'selected');
       assert.deepEqual(put.body.selected_repository_ids, [42]);
     }
+  });
+
+  test('writes an organization API key with visibility selected and the given repositories', async () => {
+    const pair = await keypair();
+    const { fetch, calls } = mockFetch({
+      [`GET ${organizationBase}/secrets/public-key`]: {
+        data: { key_id: 'org-key', key: pair.encoded },
+      },
+      [`PUT ${organizationBase}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
+        status: 204,
+      },
+    });
+    await organization(fetch).saveSecrets(names, {
+      apiKey: 'sk-ant-api03-org',
+    });
+    assert.deepEqual(keys(calls), [
+      `GET ${organizationBase}/secrets/public-key`,
+      `PUT ${organizationBase}/secrets/UREVIEW_API_KEY_ABNEGATE`,
+    ]);
+    const put = calls[1];
+    assert.equal(put.body.visibility, VISIBILITY);
+    assert.deepEqual(put.body.selected_repository_ids, [7, 9]);
+    assert.equal(decrypt(put.body.encrypted_value, pair), 'sk-ant-api03-org');
   });
 
   for (const repositories of [null, []]) {

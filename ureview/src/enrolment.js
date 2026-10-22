@@ -4,7 +4,9 @@ import { validateTokens } from './secret.js';
 import { ValidationError } from './ValidationError.js';
 
 const FIELDS = new Set(['config', 'tokens']);
-const CLAUDE_TOKEN_REQUIRED = 'Provide a Claude token to enrol.';
+const CLAUDE_TOKENS = Object.freeze(['oauth', 'apiKey']);
+const CLAUDE_TOKEN_REQUIRED =
+  'Provide a Claude token or an Anthropic API key to enrol.';
 const Stored = Object.freeze({
   SUBMITTED: 'submitted',
   ABSENT: 'absent',
@@ -89,7 +91,10 @@ async function reread(store, names, config) {
 }
 
 function lacksClaudeToken(kinds, existing) {
-  if (kinds.includes('oauth') || existing.oauth || existing.apiKey) {
+  if (
+    kinds.some((kind) => CLAUDE_TOKENS.includes(kind)) ||
+    CLAUDE_TOKENS.some((kind) => existing[kind])
+  ) {
     return false;
   }
   return kinds.length === 0 || !existing.variable;

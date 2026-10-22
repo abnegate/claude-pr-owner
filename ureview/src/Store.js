@@ -137,11 +137,10 @@ export class Store {
     }
   }
 
-  async saveSecrets(names, { oauth, push }) {
-    const values = [
-      [names.oauth, oauth],
-      [names.push, push],
-    ].filter(([, value]) => typeof value === 'string');
+  async saveSecrets(names, tokens) {
+    const values = KINDS.filter((kind) => typeof tokens[kind] === 'string').map(
+      (kind) => [names[kind], tokens[kind]],
+    );
     if (values.length === 0) {
       return;
     }
