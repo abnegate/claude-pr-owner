@@ -430,7 +430,7 @@ jobs:
       client_id: ${{ vars.SECURITY_REVIEW_APP_CLIENT_ID }}
       project: projects/app.md
       mode: deep
-      runner: gcrunner={id}/runner=standard/spot=false
+      runner: gcrunner={0}/runner=standard/spot=false
       areas: |
         auth: src/Auth app/controllers/api/account.php
         storage: src/Storage app/controllers/api/storage.php
@@ -440,7 +440,7 @@ jobs:
 
 Fork pull requests never receive secrets, GitHub masks the values in logs, the models' shells cannot see them, and nothing a model writes reaches a log. App tokens are minted per job, scoped to the one reviewed repository and the three permissions above, and expire within the hour.
 
-GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says, and a deep review of a large area can run longer, so give deep mode a self-hosted, non-preemptible runner. Self-hosted jobs run up to 5 days, which is the deep default. Artifacts between jobs are kept 7 days so a run that queues for a day still finds them.
+GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says, and a deep review of a large area can run longer, so give deep mode a self-hosted, non-preemptible runner. Private repositories also pay for GitHub-hosted minutes, and an organization out of them cannot start a single job, so a central repository on a self-hosted runner can set `runner` on its nightly workflows too. Self-hosted jobs run up to 5 days, which is the deep default. Artifacts between jobs are kept 7 days so a run that queues for a day still finds them.
 
 ### Inputs
 
@@ -457,7 +457,7 @@ GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says,
 | `triage_model` | `claude-fable-5-1` | Confirms, merges, and deduplicates findings, and rechecks open ones |
 | `effort` | `xhigh`, or `max` for deep | Effort for every model |
 | `budget_usd` | `40`, or no cap for deep | Spend cap for each Claude session |
-| `runner` | `ubuntu-24.04` | `runs-on` for review and triage jobs. `{id}` becomes a unique id per job, as gcrunner-style runners need |
+| `runner` | `ubuntu-24.04` | `runs-on` for every job. `{0}` becomes an id unique to the run and job, as gcrunner-style self-hosted runners need |
 | `timeout_minutes` | `360`, or `7200` for deep | Timeout for each review and triage job |
 | `sink` | `issues` if private, else `code-scanning` | Where confirmed findings go |
 | `claude_code_version`, `codex_version` | Pinned | CLI versions |
