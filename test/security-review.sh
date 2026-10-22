@@ -127,7 +127,69 @@ const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://stub');
     let payload = { number: 100 };
     let status = 200;
-    if (url.pathname === '/repos/acme/fresh/code-scanning/alerts') {
+    const assigned = '/repos/acme/assigned';
+    const cited = 'b'.repeat(40);
+    if (request.method === 'POST' && url.pathname === '/graphql') {
+      const { variables } = JSON.parse(body);
+      const authors = { 'app/controllers/api/x.php': 'alice', 'bot.php': 'dependabot[bot]', 'reader.php': 'bob' };
+      const login = authors[variables.path];
+      payload = {
+        data: {
+          repository: {
+            object: {
+              blame: {
+                ranges: login === undefined ? [] : [{ startingLine: 1, endingLine: 50, commit: { author: { user: { login } } } }],
+              },
+            },
+          },
+        },
+      };
+    } else if (url.pathname.startsWith(`${assigned}/collaborators/`)) {
+      const permissions = { alice: 'write', bob: 'read', 'dependabot[bot]': 'write' };
+      const login = decodeURIComponent(url.pathname.split('/').at(-2));
+      if (permissions[login] === undefined) {
+        status = 404;
+        payload = { message: 'Not Found' };
+      } else {
+        payload = { permission: permissions[login] };
+      }
+    } else if (request.method === 'POST' && url.pathname === `${assigned}/code-scanning/sarifs`) {
+      status = 202;
+      payload = { id: 'sarif-1' };
+    } else if (url.pathname === `${assigned}/code-scanning/sarifs/sarif-1`) {
+      payload = { processing_status: 'complete' };
+    } else if (request.method === 'GET' && url.pathname === `${assigned}/code-scanning/alerts`) {
+      const alert = (number, fingerprint, path, assignees) => ({
+        number,
+        assignees,
+        rule: { id: `security-review/${fingerprint}`, description: 'A', security_severity_level: 'high', tags: [] },
+        most_recent_instance: { commit_sha: cited, location: { path, start_line: 12 }, message: { text: 'm' } },
+      });
+      payload =
+        url.searchParams.get('state') === 'open' && url.searchParams.get('page') === '1'
+          ? [
+              alert(21, 'a9ec607ab969fe7c', 'app/controllers/api/x.php', []),
+              alert(22, 'cccccccccccccccc', 'app/controllers/api/x.php', [{ login: 'carol' }]),
+              alert(23, 'dddddddddddddddd', 'bot.php', []),
+            ]
+          : [];
+    } else if (request.method === 'GET' && url.pathname === `${assigned}/issues`) {
+      const issue = (number, fingerprint, path, assignees) => ({
+        number,
+        state: 'open',
+        title: 'T',
+        assignees,
+        body: `**Location:** [\`${path}:12\`](https://github.com/acme/assigned/blob/${cited}/${path}#L12)\n\n<!-- security-review:fingerprint=${fingerprint} -->`,
+      });
+      payload =
+        url.searchParams.get('page') === '1'
+          ? [
+              issue(31, 'eeeeeeeeeeeeeeee', 'app/controllers/api/x.php', []),
+              issue(32, 'ffffffffffffffff', 'reader.php', []),
+              issue(33, '1111111111111111', 'app/controllers/api/x.php', [{ login: 'carol' }]),
+            ]
+          : [];
+    } else if (url.pathname === '/repos/acme/fresh/code-scanning/alerts') {
       status = 404;
       payload = { message: 'no analysis found' };
     } else if (url.pathname === '/repos/acme/disabled/code-scanning/alerts') {
@@ -202,13 +264,14 @@ jq -n --argjson a "$confirmed" --argjson b "$confirmed" --argjson c "$known_dupl
 : > "$temp/api.log"
 SINK=issues GITHUB_API_URL="$api" TARGET_REPOSITORY=acme/app GITHUB_TOKEN=token GITHUB_SERVER_URL=https://github.com HEAD_SHA=abc \
   node "$report" publish "$temp/triage" > "$temp/out"
-expect_line "$temp/out" 'New issues: 2. Flagged as resolved: 1.'
+expect_line "$temp/out" 'New issues: 2. Assigned: 0. Flagged as resolved: 1.'
 [[ "$(grep -c '^POST /repos/acme/app/issues ' "$temp/api.log")" == 2 ]] || fail "issues created: $(cat "$temp/api.log")"
 grep -q '^POST /repos/acme/app/issues/7/comments ' "$temp/api.log" || fail 'resolved issue 7 was not flagged'
 grep -q '^POST /repos/acme/app/issues/8/comments ' "$temp/api.log" && fail 'issue 8 was flagged twice'
 grep '^POST /repos/acme/app/issues ' "$temp/api.log" | head -1 | grep -q 'security-review:fingerprint=a9ec607ab969fe7c' \
   || fail 'issue body carries no fingerprint marker'
 grep -q 'blob/abc/app/controllers/api/x.php#L12' "$temp/api.log" || fail 'issue links the wrong location'
+grep -q '^POST /graphql ' "$temp/api.log" && fail 'findings were assigned without the assign option'
 
 # A rerun publishes with the plan's snapshot of tracked findings, taken before the first attempt filed anything.
 echo '[]' > "$WORK/known.json"
@@ -216,8 +279,49 @@ jq -n --argjson a "$confirmed" '{model: "claude-fable-5-1", findings: [$a], reso
 : > "$temp/api.log"
 SINK=issues GITHUB_API_URL="$api" TARGET_REPOSITORY=acme/filed GITHUB_TOKEN=token GITHUB_SERVER_URL=https://github.com HEAD_SHA=abc \
   node "$report" publish "$temp/triage" > "$temp/out"
-expect_line "$temp/out" 'New issues: 0. Flagged as resolved: 0.'
+expect_line "$temp/out" 'New issues: 0. Assigned: 0. Flagged as resolved: 0.'
 grep -q '^POST /repos/acme/filed/issues ' "$temp/api.log" && fail 'a rerun filed a finding that is already an issue'
+
+# assign: blame gives each new finding to the last author of its cited line, when they can write and are not a bot.
+bot_finding=$(jq -c '. + {sources: ["gpt-6.1-sol"], duplicateOf: null}' <<< "$(finding 'Bot line' bot.php B::c)")
+reader_finding=$(jq -c '. + {sources: ["gpt-6.1-sol"], duplicateOf: null}' <<< "$(finding 'Reader line' reader.php R::d)")
+jq -n --argjson a "$confirmed" --argjson b "$bot_finding" --argjson c "$reader_finding" \
+  '{model: "claude-fable-5-1", findings: [$a, $b, $c], resolved: []}' > "$temp/triage/0.json"
+: > "$temp/api.log"
+SINK=issues ASSIGN=blame GITHUB_API_URL="$api" TARGET_REPOSITORY=acme/assigned GITHUB_TOKEN=token GITHUB_SERVER_URL=https://github.com HEAD_SHA=abc \
+  node "$report" publish "$temp/triage" > "$temp/out"
+expect_line "$temp/out" 'New issues: 3. Assigned: 1. Flagged as resolved: 0.'
+[[ "$(grep '^POST /repos/acme/assigned/issues ' "$temp/api.log" | cut -d' ' -f3- | jq -c 'select(.assignees != null) | [.title, .assignees]')" == '["[high] Missing project check",["alice"]]' ]] \
+  || fail "issues were not assigned to the last writer of the cited line: $(grep '^POST /repos/acme/assigned/issues ' "$temp/api.log")"
+grep '^POST /graphql ' "$temp/api.log" | head -1 | cut -d' ' -f3- | jq -e '.variables.ref == "abc"' > /dev/null || fail 'new issues are not blamed at the reviewed commit'
+
+echo '[]' > "$WORK/known.json"
+jq -n --argjson a "$confirmed" '{model: "claude-fable-5-1", findings: [$a], resolved: []}' > "$temp/triage/0.json"
+: > "$temp/api.log"
+SINK=code-scanning ASSIGN=blame GITHUB_API_URL="$api" TARGET_REPOSITORY=acme/assigned GITHUB_TOKEN=token HEAD_SHA=abc BRANCH=main \
+  node "$report" publish "$temp/triage" > "$temp/out"
+expect_line "$temp/out" 'Assigned alerts: 1.'
+[[ "$(grep '^PATCH ' "$temp/api.log" | cut -d' ' -f2-)" == '/repos/acme/assigned/code-scanning/alerts/21 {"assignees":["alice"]}' ]] \
+  || fail "only the new unassigned alert should be assigned: $(grep '^PATCH ' "$temp/api.log")"
+
+# The backfill assigns open, unassigned findings, blaming issues at the commit they cite.
+: > "$temp/api.log"
+SINK=issues ASSIGN=blame GITHUB_API_URL="$api" TARGET_REPOSITORY=acme/assigned GITHUB_TOKEN=token node "$report" assign > "$temp/out"
+expect_line "$temp/out" 'Unassigned open issues: 2.'
+expect_line "$temp/out" 'Assigned issues: 1.'
+grep -q '^POST /repos/acme/assigned/issues/31/assignees {"assignees":\["alice"\]}' "$temp/api.log" || fail "the backfill did not assign issue 31: $(cat "$temp/api.log")"
+grep '^POST /graphql ' "$temp/api.log" | head -1 | cut -d' ' -f3- | jq -e --arg cited "$(printf 'b%.0s' {1..40})" '.variables.ref == $cited' > /dev/null \
+  || fail 'the backfill does not blame an issue at the commit it cites'
+
+: > "$temp/api.log"
+SINK=code-scanning ASSIGN=blame GITHUB_API_URL="$api" TARGET_REPOSITORY=acme/assigned GITHUB_TOKEN=token node "$report" assign > "$temp/out"
+expect_line "$temp/out" 'Unassigned open alerts: 2.'
+expect_line "$temp/out" 'Assigned alerts: 1.'
+[[ "$(grep -c '^PATCH ' "$temp/api.log")" == 1 ]] || fail "the backfill should assign one alert: $(grep '^PATCH ' "$temp/api.log")"
+
+if SINK=issues GITHUB_API_URL="$api" TARGET_REPOSITORY=acme/assigned GITHUB_TOKEN=token node "$report" assign > "$temp/out"; then
+  fail 'the backfill ran without the assign option'
+fi
 
 # publish to code scanning against the stub API: new findings, kept tracked alerts, resolved ones dropped, duplicates not re-emitted.
 node "$report" areas "$temp/areas.txt" > /dev/null

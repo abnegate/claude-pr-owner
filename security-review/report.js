@@ -11,6 +11,10 @@ const Sink = Object.freeze({
   Issues: 'issues',
 });
 
+const Assignment = Object.freeze({
+  Blame: 'blame',
+});
+
 const Provider = Object.freeze({
   Anthropic: 'anthropic',
   OpenAI: 'openai',
@@ -22,8 +26,24 @@ const RULE_PREFIX = 'security-review/';
 const FINGERPRINT_KEY = 'securityReview/v1';
 const FINGERPRINT_MARKER =
   /<!-- security-review:fingerprint=([0-9a-f]{16}) -->/;
+const CITED_COMMIT = /\/blob\/([0-9a-f]{40})\//;
 const LOCATION_MARKER = /\*\*Location:\*\* \[`([^`]+):(\d+)`\]/;
 const RESOLVED_MARKER = '<!-- security-review:resolved -->';
+const WRITE_PERMISSIONS = new Set(['admin', 'maintain', 'write']);
+const BOT_LOGIN = /\[bot\]$|^(dependabot|renovate|github-actions)$/i;
+const BLAME_QUERY = `query($owner: String!, $name: String!, $ref: String!, $path: String!) {
+  repository(owner: $owner, name: $name) {
+    object(expression: $ref) {
+      ... on Commit {
+        blame(path: $path) {
+          ranges { startingLine endingLine commit { author { user { login } } } }
+        }
+      }
+    }
+  }
+}`;
+const SARIF_POLL_ATTEMPTS = 60;
+const SARIF_POLL_MILLISECONDS = 5000;
 
 const SEVERITY_SCORE = {
   critical: '9.5',
@@ -39,6 +59,7 @@ const SEVERITY_LEVEL = {
 };
 
 const {
+  ASSIGN,
   BRANCH,
   GITHUB_API_URL,
   GITHUB_OUTPUT,
@@ -161,6 +182,9 @@ async function knownFromCodeScanning() {
         file: location.path,
         line: location.start_line,
         message: alert.most_recent_instance?.message?.text ?? '',
+        number: alert.number,
+        commit: alert.most_recent_instance?.commit_sha ?? '',
+        assignees: (alert.assignees ?? []).map((user) => user.login),
       });
     }
   }
@@ -187,6 +211,8 @@ async function knownFromIssues() {
         title: issue.title,
         file: location[1] ?? '',
         line: Number(location[2] ?? 0),
+        assignees: (issue.assignees ?? []).map((user) => user.login),
+        commit: CITED_COMMIT.exec(issue.body)?.[1] ?? '',
       };
     });
 }
@@ -353,6 +379,100 @@ function sarifResult(id, severity, message, file, line, fingerprint) {
   };
 }
 
+const writers = new Map();
+
+async function canBeAssigned(login) {
+  if (!login || BOT_LOGIN.test(login)) {
+    return false;
+  }
+  if (!writers.has(login)) {
+    try {
+      const data = await github(
+        'GET',
+        `/repos/${TARGET_REPOSITORY}/collaborators/${encodeURIComponent(login)}/permission`,
+      );
+      writers.set(login, WRITE_PERMISSIONS.has(data?.permission));
+    } catch {
+      writers.set(login, false);
+    }
+  }
+  return writers.get(login);
+}
+
+async function lastAuthor(ref, file, line) {
+  const [owner, name] = TARGET_REPOSITORY.split('/');
+  const response = await github('POST', '/graphql', {
+    query: BLAME_QUERY,
+    variables: { owner, name, ref, path: file },
+  });
+  const ranges = response?.data?.repository?.object?.blame?.ranges ?? [];
+  const range = ranges.find(
+    (candidate) =>
+      line >= candidate.startingLine && line <= candidate.endingLine,
+  );
+  return range?.commit?.author?.user?.login ?? null;
+}
+
+async function ownerOf(ref, file, line) {
+  if (ASSIGN !== Assignment.Blame || !file || !(line > 0)) {
+    return null;
+  }
+  try {
+    const login = await lastAuthor(ref, file, line);
+    return (await canBeAssigned(login)) ? login : null;
+  } catch {
+    return null;
+  }
+}
+
+async function processed(sarifId) {
+  for (let attempt = 0; attempt < SARIF_POLL_ATTEMPTS; attempt++) {
+    const upload = await github(
+      'GET',
+      `/repos/${TARGET_REPOSITORY}/code-scanning/sarifs/${sarifId}`,
+    );
+    if (upload?.processing_status === 'complete') {
+      return true;
+    }
+    if (upload?.processing_status === 'failed') {
+      throw new Error(
+        `Code scanning could not process the analysis: ${(upload.errors ?? []).join('; ')}`,
+      );
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, SARIF_POLL_MILLISECONDS),
+    );
+  }
+  return false;
+}
+
+async function assignAlerts(fingerprints) {
+  const alerts = await alertsIn('open');
+  let assigned = 0;
+  for (const alert of alerts) {
+    const fingerprint = alert.rule.id.slice(RULE_PREFIX.length);
+    if (!fingerprints.has(fingerprint) || (alert.assignees ?? []).length > 0) {
+      continue;
+    }
+    const location = alert.most_recent_instance?.location ?? {};
+    const owner = await ownerOf(
+      alert.most_recent_instance?.commit_sha || HEAD_SHA,
+      location.path,
+      location.start_line,
+    );
+    if (owner === null) {
+      continue;
+    }
+    await github(
+      'PATCH',
+      `/repos/${TARGET_REPOSITORY}/code-scanning/alerts/${alert.number}`,
+      { assignees: [owner] },
+    );
+    assigned++;
+  }
+  return assigned;
+}
+
 async function publishCodeScanning(findings, resolved, tracked) {
   const rules = new Map();
   const results = [];
@@ -430,12 +550,31 @@ async function publishCodeScanning(findings, resolved, tracked) {
   if (created === 0 && closed === 0) {
     return;
   }
-  await github('POST', `/repos/${TARGET_REPOSITORY}/code-scanning/sarifs`, {
-    commit_sha: HEAD_SHA,
-    ref: `refs/heads/${BRANCH}`,
-    sarif: zlib.gzipSync(JSON.stringify(sarif)).toString('base64'),
-  });
+  const upload = await github(
+    'POST',
+    `/repos/${TARGET_REPOSITORY}/code-scanning/sarifs`,
+    {
+      commit_sha: HEAD_SHA,
+      ref: `refs/heads/${BRANCH}`,
+      sarif: zlib.gzipSync(JSON.stringify(sarif)).toString('base64'),
+    },
+  );
   console.log('Uploaded the code scanning analysis.');
+  if (ASSIGN !== Assignment.Blame || created === 0) {
+    return;
+  }
+  if (!(await processed(upload.id))) {
+    console.log(
+      '::warning::Code scanning had not processed the analysis yet, so new alerts were not assigned.',
+    );
+    return;
+  }
+  const fresh = new Set(
+    findings
+      .filter((finding) => !finding.duplicateOf)
+      .map((finding) => fingerprintOf(finding)),
+  );
+  console.log(`Assigned alerts: ${await assignAlerts(fresh)}.`);
 }
 
 function issueBody(finding, fingerprint) {
@@ -461,18 +600,24 @@ async function publishIssues(findings, resolved, tracked) {
     [...tracked, ...filed].map((entry) => entry.fingerprint),
   );
   let created = 0;
+  let assigned = 0;
   for (const finding of findings) {
     const fingerprint = finding.duplicateOf ?? fingerprintOf(finding);
     if (finding.duplicateOf || seen.has(fingerprint)) {
       continue;
     }
     seen.add(fingerprint);
+    const owner = await ownerOf(HEAD_SHA, finding.file, finding.line);
     await github('POST', `/repos/${TARGET_REPOSITORY}/issues`, {
       title: `[${finding.severity}] ${finding.title}`,
       body: issueBody(finding, fingerprint),
       labels: [LABEL],
+      ...(owner === null ? {} : { assignees: [owner] }),
     });
     created++;
+    if (owner !== null) {
+      assigned++;
+    }
   }
   let flagged = 0;
   const fixed = tracked.filter(
@@ -494,7 +639,9 @@ async function publishIssues(findings, resolved, tracked) {
     );
     flagged++;
   }
-  console.log(`New issues: ${created}. Flagged as resolved: ${flagged}.`);
+  console.log(
+    `New issues: ${created}. Assigned: ${assigned}. Flagged as resolved: ${flagged}.`,
+  );
 }
 
 async function publish(directory) {
@@ -515,12 +662,60 @@ async function publish(directory) {
   await publishIssues(findings, resolved, tracked);
 }
 
+async function assign() {
+  if (ASSIGN !== Assignment.Blame) {
+    throw new Error(`ASSIGN must be ${Assignment.Blame} to assign findings.`);
+  }
+  if (SINK === Sink.CodeScanning) {
+    const tracked = await knownFromCodeScanning();
+    const open = new Set(
+      tracked
+        .filter(
+          (entry) => entry.state === 'open' && entry.assignees.length === 0,
+        )
+        .map((entry) => entry.fingerprint),
+    );
+    console.log(`Unassigned open alerts: ${open.size}.`);
+    console.log(`Assigned alerts: ${await assignAlerts(open)}.`);
+    return;
+  }
+  const issues = (await knownFromIssues()).filter(
+    (entry) => entry.state === 'open' && entry.assignees.length === 0,
+  );
+  console.log(`Unassigned open issues: ${issues.length}.`);
+  let assigned = 0;
+  for (const issue of issues) {
+    const owner = await ownerOf(
+      issue.commit || HEAD_SHA || 'HEAD',
+      issue.file,
+      issue.line,
+    );
+    if (owner === null) {
+      continue;
+    }
+    await github(
+      'POST',
+      `/repos/${TARGET_REPOSITORY}/issues/${issue.number}/assignees`,
+      { assignees: [owner] },
+    );
+    assigned++;
+  }
+  console.log(`Assigned issues: ${assigned}.`);
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   if (!WORK) {
     throw new Error('WORK must be set.');
   }
   switch (command) {
+    case 'assign':
+      if (!Object.values(Sink).includes(SINK) || !TARGET_REPOSITORY) {
+        throw new Error(
+          `SINK must be one of ${Object.values(Sink).join(', ')}, and TARGET_REPOSITORY must be set.`,
+        );
+      }
+      return assign();
     case 'known':
     case 'publish':
       if (!Object.values(Sink).includes(SINK) || !TARGET_REPOSITORY) {

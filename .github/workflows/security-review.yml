@@ -85,6 +85,12 @@ on:
           GitHub creates an environment that does not exist yet, with no secrets.
         type: string
         default: security-review
+      assign:
+        description: >-
+          blame assigns each new finding to whoever last changed its cited line, when they
+          have write access to the reviewed repository and are not a bot. Empty assigns no one.
+        type: string
+        default: ''
       sink:
         description: >-
           Where confirmed findings go: issues or code-scanning. Empty uses issues for
@@ -768,4 +774,5 @@ jobs:
           GITHUB_TOKEN: ${{ steps.token.outputs.token || github.token }}
           TARGET_REPOSITORY: ${{ inputs.repository }}
           BRANCH: ${{ needs.plan.outputs.branch }}
+          ASSIGN: ${{ inputs.assign }}
         run: node ureview/security-review/report.js publish "$RUNNER_TEMP/triage"
