@@ -230,6 +230,7 @@ describe('session', () => {
       '/api/repositories',
       '/api/organizations',
       '/api/organizations/appwrite',
+      '/api/organizations/appwrite/repositories',
     ]) {
       assertFailure(
         await send({ path, headers: { cookie } }),
@@ -433,6 +434,7 @@ describe('request gates', () => {
       { method: 'PUT', path: '/api/organizations/bad_org/enrolment' },
       { method: 'DELETE', path: '/api/repositories/abnegate/bad%2Frepo' },
       { method: 'GET', path: '/api/organizations/bad.org' },
+      { method: 'GET', path: '/api/organizations/bad.org/repositories' },
       { method: 'PUT', path: '/api/organizations/bad_org/config' },
       { method: 'DELETE', path: `/api/organizations/${'a'.repeat(40)}` },
     ];
@@ -695,6 +697,7 @@ describe('HEAD and OPTIONS', () => {
       ['/auth/logout', 'POST, OPTIONS'],
       ['/api/repositories/abnegate/edge', 'GET, DELETE, HEAD, OPTIONS'],
       ['/api/organizations/appwrite/config', 'PUT, OPTIONS'],
+      ['/api/organizations/appwrite/repositories', 'GET, HEAD, OPTIONS'],
       ['/api/repositories/abnegate/edge/tokens', 'PUT, OPTIONS'],
       ['/api/organizations/appwrite/tokens', 'PUT, OPTIONS'],
       ['/api/repositories/abnegate/edge/enrolment', 'PUT, OPTIONS'],

@@ -247,6 +247,11 @@ export function createApp({ environment, fetch, pages, now = Date.now }) {
     compile('GET', '/api/organizations', organizations.list),
     compile('GET', '/api/organizations/:organization', organizations.get),
     compile(
+      'GET',
+      '/api/organizations/:organization/repositories',
+      organizations.listRepositories,
+    ),
+    compile(
       'PUT',
       '/api/organizations/:organization/config',
       organizations.saveConfig,

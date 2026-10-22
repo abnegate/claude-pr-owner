@@ -3,7 +3,7 @@ import { describe, test } from 'node:test';
 import sodium from 'libsodium-wrappers';
 import { GitHubAppError } from '../src/GitHubAppError.js';
 import { GitHubError } from '../src/GitHubError.js';
-import { Store, VISIBILITY } from '../src/Store.js';
+import { Store, UNSCOPED, VISIBILITY } from '../src/Store.js';
 import { ValidationError } from '../src/ValidationError.js';
 import { mockFetch, NOT_FOUND } from './support/fetch.js';
 
@@ -35,13 +35,17 @@ function repository(fetch) {
   });
 }
 
-function organization(fetch, repositorySelection = 'all') {
+function organization(fetch, repositories = [7, 9]) {
   return Store.organization({
     fetch,
     token: 'gho_user',
     organization: 'appwrite-labs',
-    repositorySelection,
+    repositories,
   });
+}
+
+function unscoped(error) {
+  return error instanceof ValidationError && error.message === UNSCOPED;
 }
 
 function keys(calls) {
@@ -157,13 +161,15 @@ describe('Store.status', () => {
         data: { name: 'UREVIEW_ABNEGATE', value: '{"bots":false}' },
       },
       [`GET ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: {
-        data: { name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE', visibility: 'all' },
+        data: { name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE', visibility: 'selected' },
       },
     });
     const status = await organization(fetch).status(names);
     assert.deepEqual(status, {
       config: { bots: false },
       secrets: { oauth: true, push: false, apiKey: false },
+      repositories: null,
+      exposed: [],
     });
     assert.ok(calls.every((call) => call.key.includes(organizationBase)));
     assert.ok(
@@ -171,6 +177,80 @@ describe('Store.status', () => {
         (call) => call.headers.get('authorization') === 'Bearer gho_user',
       ),
     );
+  });
+
+  test('reports the selected repositories and every secret not limited to them', async () => {
+    const listing = `GET ${organizationBase}/variables/UREVIEW_ABNEGATE/repositories`;
+    const next = `https://api.github.com${organizationBase}/variables/UREVIEW_ABNEGATE/repositories?per_page=100&page=2`;
+    const { fetch, calls } = mockFetch({
+      [`GET ${organizationBase}/variables/UREVIEW_ABNEGATE`]: {
+        data: {
+          name: 'UREVIEW_ABNEGATE',
+          value: '{"review":true}',
+          visibility: 'selected',
+        },
+      },
+      [listing]: ({ url }) =>
+        url.searchParams.get('page') === '2'
+          ? { data: { total_count: 3, repositories: [{ id: 30 }] } }
+          : {
+              data: { total_count: 3, repositories: [{ id: 10 }, { id: 20 }] },
+              headers: { link: `<${next}>; rel="next"` },
+            },
+      [`GET ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: {
+        data: { name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE', visibility: 'all' },
+      },
+      [`GET ${organizationBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: {
+        data: { name: 'UREVIEW_PUSH_TOKEN_ABNEGATE', visibility: 'selected' },
+      },
+      [`GET ${organizationBase}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_API_KEY_ABNEGATE', visibility: 'private' },
+      },
+    });
+    const status = await organization(fetch).status(names);
+    assert.deepEqual(status, {
+      config: { review: true },
+      secrets: { oauth: true, push: true, apiKey: true },
+      repositories: [10, 20, 30],
+      exposed: ['oauth', 'apiKey'],
+    });
+    const listed = calls.find((call) => call.key === listing);
+    assert.equal(new URL(listed.url).searchParams.get('per_page'), '100');
+    assert.equal(
+      calls.some((call) => call.method !== 'GET'),
+      false,
+    );
+    for (const call of calls) {
+      assert.equal(call.headers.get('authorization'), 'Bearer gho_user');
+    }
+  });
+
+  for (const [visibility, exposed] of [
+    ['all', ['oauth']],
+    ['private', ['oauth']],
+    ['selected', []],
+  ]) {
+    test(`reports an organization secret with visibility ${visibility} as ${exposed.length === 0 ? 'not exposed' : 'exposed'}`, async () => {
+      const { fetch } = mockFetch({
+        ...absent(organizationBase),
+        [`GET ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: {
+          data: { name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE', visibility },
+        },
+      });
+      const status = await organization(fetch).status(names);
+      assert.deepEqual(status.exposed, exposed);
+    });
+  }
+
+  test('never reports an absent organization secret as exposed', async () => {
+    const { fetch } = mockFetch(absent(organizationBase));
+    const status = await organization(fetch).status(names);
+    assert.deepEqual(status, {
+      config: null,
+      secrets: { oauth: false, push: false, apiKey: false },
+      repositories: null,
+      exposed: [],
+    });
   });
 
   test('throws GitHubError on any other status', async () => {
@@ -296,6 +376,189 @@ describe('Store.variable', () => {
   });
 });
 
+describe('Store.repositories', () => {
+  const variable = `GET ${organizationBase}/variables/UREVIEW_ABNEGATE`;
+  const listing = `${variable}/repositories`;
+
+  test('returns null when the variable does not exist', async () => {
+    const { fetch, calls } = mockFetch({ [variable]: NOT_FOUND });
+    assert.equal(await organization(fetch).repositories(names), null);
+    assert.deepEqual(keys(calls), [variable]);
+  });
+
+  for (const visibility of ['all', 'private', undefined]) {
+    test(`returns null without listing when the variable visibility is ${visibility}`, async () => {
+      const { fetch, calls } = mockFetch({
+        [variable]: {
+          data: { name: 'UREVIEW_ABNEGATE', value: '{}', visibility },
+        },
+      });
+      assert.equal(await organization(fetch).repositories(names), null);
+      assert.deepEqual(keys(calls), [variable]);
+    });
+  }
+
+  test('lists every repository of a selected variable with the user token', async () => {
+    const next = `https://api.github.com${organizationBase}/variables/UREVIEW_ABNEGATE/repositories?per_page=100&page=2`;
+    const { fetch, calls } = mockFetch({
+      [variable]: {
+        data: { name: 'UREVIEW_ABNEGATE', value: '{}', visibility: 'selected' },
+      },
+      [listing]: ({ url }) =>
+        url.searchParams.get('page') === '2'
+          ? { data: { total_count: 3, repositories: [{ id: 3 }] } }
+          : {
+              data: { total_count: 3, repositories: [{ id: 1 }, { id: 2 }] },
+              headers: { link: `<${next}>; rel="next"` },
+            },
+    });
+    assert.deepEqual(await organization(fetch).repositories(names), [1, 2, 3]);
+    assert.deepEqual(keys(calls), [variable, listing, listing]);
+    assert.equal(new URL(calls[1].url).searchParams.get('per_page'), '100');
+    for (const call of calls) {
+      assert.equal(call.headers.get('authorization'), 'Bearer gho_user');
+    }
+  });
+
+  test('returns an empty list for a selected variable with no repositories', async () => {
+    const { fetch } = mockFetch({
+      [variable]: {
+        data: { name: 'UREVIEW_ABNEGATE', value: '{}', visibility: 'selected' },
+      },
+      [listing]: { data: { total_count: 0, repositories: [] } },
+    });
+    assert.deepEqual(await organization(fetch).repositories(names), []);
+  });
+
+  test('throws GitHubError when the listing fails', async () => {
+    const { fetch } = mockFetch({
+      [variable]: {
+        data: { name: 'UREVIEW_ABNEGATE', value: '{}', visibility: 'selected' },
+      },
+      [listing]: { status: 403, data: { message: 'Forbidden' } },
+    });
+    await assert.rejects(
+      organization(fetch).repositories(names),
+      (error) => error instanceof GitHubError && error.status === 403,
+    );
+  });
+});
+
+describe('Store.restrict', () => {
+  const variable = `PATCH ${organizationBase}/variables/UREVIEW_ABNEGATE`;
+
+  function secrets(visibilities = {}) {
+    return Object.fromEntries(
+      Object.entries({
+        oauth: 'UREVIEW_OAUTH_TOKEN_ABNEGATE',
+        push: 'UREVIEW_PUSH_TOKEN_ABNEGATE',
+        apiKey: 'UREVIEW_API_KEY_ABNEGATE',
+      }).flatMap(([kind, name]) => [
+        [
+          `GET ${organizationBase}/secrets/${name}`,
+          visibilities[kind] === undefined
+            ? NOT_FOUND
+            : { data: { name, visibility: visibilities[kind] } },
+        ],
+        [
+          `PUT ${organizationBase}/secrets/${name}/repositories`,
+          { status: 204 },
+        ],
+      ]),
+    );
+  }
+
+  test('limits the variable and every selected secret to the repositories', async () => {
+    const { fetch, calls } = mockFetch({
+      ...secrets({ oauth: 'selected', push: 'selected', apiKey: 'selected' }),
+      [variable]: { status: 204 },
+    });
+    await organization(fetch).restrict(names);
+    const writes = calls.filter((call) => call.method !== 'GET');
+    assert.deepEqual(keys(writes).sort(), [
+      variable,
+      `PUT ${organizationBase}/secrets/UREVIEW_API_KEY_ABNEGATE/repositories`,
+      `PUT ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE/repositories`,
+      `PUT ${organizationBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE/repositories`,
+    ]);
+    for (const write of writes) {
+      assert.deepEqual(
+        write.body,
+        write.key === variable
+          ? { visibility: 'selected', selected_repository_ids: [7, 9] }
+          : { selected_repository_ids: [7, 9] },
+      );
+    }
+    for (const call of calls) {
+      assert.equal(call.headers.get('authorization'), 'Bearer gho_user');
+    }
+  });
+
+  test('never touches a secret shared with all or private repositories', async () => {
+    const { fetch, calls } = mockFetch({
+      ...secrets({ oauth: 'all', push: 'private', apiKey: 'selected' }),
+      [variable]: { status: 204 },
+    });
+    await organization(fetch).restrict(names);
+    assert.deepEqual(
+      keys(calls.filter((call) => call.method !== 'GET')).sort(),
+      [
+        variable,
+        `PUT ${organizationBase}/secrets/UREVIEW_API_KEY_ABNEGATE/repositories`,
+      ],
+    );
+  });
+
+  test('tolerates a missing variable and missing secrets', async () => {
+    const { fetch, calls } = mockFetch({
+      ...secrets(),
+      [variable]: NOT_FOUND,
+    });
+    await organization(fetch).restrict(names);
+    assert.deepEqual(keys(calls.filter((call) => call.method !== 'GET')), [
+      variable,
+    ]);
+  });
+
+  for (const repositories of [null, []]) {
+    test(`refuses to restrict to ${JSON.stringify(repositories)} repositories before calling GitHub`, async () => {
+      const { fetch, calls } = mockFetch({
+        ...secrets({ oauth: 'selected' }),
+        [variable]: { status: 204 },
+      });
+      await assert.rejects(
+        organization(fetch, repositories).restrict(names),
+        unscoped,
+      );
+      assert.deepEqual(calls, []);
+    });
+  }
+
+  test('throws GitHubError when the variable cannot be restricted', async () => {
+    const { fetch } = mockFetch({
+      ...secrets(),
+      [variable]: { status: 403, data: { message: 'Forbidden' } },
+    });
+    await assert.rejects(
+      organization(fetch).restrict(names),
+      (error) => error instanceof GitHubError && error.status === 403,
+    );
+  });
+
+  test('throws GitHubError when a secret cannot be restricted', async () => {
+    const { fetch } = mockFetch({
+      ...secrets({ push: 'selected' }),
+      [variable]: { status: 204 },
+      [`PUT ${organizationBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE/repositories`]:
+        { status: 409, data: { message: 'Conflict' } },
+    });
+    await assert.rejects(
+      organization(fetch).restrict(names),
+      (error) => error instanceof GitHubError && error.status === 409,
+    );
+  });
+});
+
 describe('Store.saveConfig', () => {
   const config = {
     effort: 'xhigh',
@@ -346,7 +609,7 @@ describe('Store.saveConfig', () => {
     assert.equal(calls[0].headers.get('authorization'), 'Bearer gho_user');
   });
 
-  test('includes visibility all for an organization on POST', async () => {
+  test('creates an organization variable visible only to the given repositories on POST', async () => {
     const { fetch, calls } = mockFetch({
       [`PATCH ${organizationBase}/variables/UREVIEW_ABNEGATE`]: NOT_FOUND,
       [`POST ${organizationBase}/variables`]: { status: 201 },
@@ -359,9 +622,27 @@ describe('Store.saveConfig', () => {
     assert.deepEqual(calls[1].body, {
       name: 'UREVIEW_ABNEGATE',
       value,
-      visibility: 'all',
+      visibility: 'selected',
+      selected_repository_ids: [7, 9],
     });
+    assert.equal(calls[1].headers.get('authorization'), 'Bearer gho_user');
   });
+
+  for (const repositories of [null, []]) {
+    test(`refuses to create an organization variable with ${JSON.stringify(repositories)} repositories`, async () => {
+      const { fetch, calls } = mockFetch({
+        [`PATCH ${organizationBase}/variables/UREVIEW_ABNEGATE`]: NOT_FOUND,
+        [`POST ${organizationBase}/variables`]: { status: 201 },
+      });
+      await assert.rejects(
+        organization(fetch, repositories).saveConfig(names, config),
+        unscoped,
+      );
+      assert.deepEqual(keys(calls), [
+        `PATCH ${organizationBase}/variables/UREVIEW_ABNEGATE`,
+      ]);
+    });
+  }
 
   test('omits absent keys from the serialized value', async () => {
     const { fetch, calls } = mockFetch({
@@ -486,13 +767,11 @@ describe('Store.saveSecrets', () => {
     ]);
   });
 
-  function organizationSecret(pair, existing, extra = {}) {
+  function organizationSecret(pair, extra = {}) {
     return {
       [`GET ${organizationBase}/secrets/public-key`]: {
         data: { key_id: 'org-key', key: pair.encoded },
       },
-      [`GET ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]:
-        existing,
       [`PUT ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: {
         status: 204,
       },
@@ -500,154 +779,68 @@ describe('Store.saveSecrets', () => {
     };
   }
 
-  test('creates a new organization secret with visibility all', async () => {
+  test('writes an organization secret with visibility selected and the given repositories without reading it first', async () => {
     const pair = await keypair();
-    const { fetch, calls } = mockFetch(organizationSecret(pair, NOT_FOUND));
+    const { fetch, calls } = mockFetch(organizationSecret(pair));
     await organization(fetch).saveSecrets(names, { oauth: 'sk-ant-oat01-org' });
-    const put = calls.find((call) => call.method === 'PUT');
-    assert.equal(VISIBILITY, 'all');
+    assert.equal(VISIBILITY, 'selected');
+    assert.deepEqual(keys(calls), [
+      `GET ${organizationBase}/secrets/public-key`,
+      `PUT ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
+    ]);
+    const put = calls[1];
     assert.deepEqual(Object.keys(put.body).sort(), [
       'encrypted_value',
       'key_id',
+      'selected_repository_ids',
       'visibility',
     ]);
     assert.equal(put.body.key_id, 'org-key');
     assert.equal(put.body.visibility, VISIBILITY);
+    assert.deepEqual(put.body.selected_repository_ids, [7, 9]);
     assert.equal(decrypt(put.body.encrypted_value, pair), 'sk-ant-oat01-org');
-    assert.equal(put.headers.get('authorization'), 'Bearer gho_user');
-  });
-
-  for (const visibility of ['all', 'private']) {
-    for (const selection of ['all', 'selected']) {
-      test(`keeps the ${visibility} visibility of an existing organization secret when the installation covers ${selection} repositories`, async () => {
-        const pair = await keypair();
-        const { fetch, calls } = mockFetch(
-          organizationSecret(pair, {
-            data: { name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE', visibility },
-          }),
-        );
-        await organization(fetch, selection).saveSecrets(names, {
-          oauth: 'sk-ant-oat01-org',
-        });
-        const put = calls.find((call) => call.method === 'PUT');
-        assert.equal(put.body.visibility, visibility);
-        assert.equal('selected_repository_ids' in put.body, false);
-        assert.equal(
-          calls.some((call) => call.key.endsWith('/repositories')),
-          false,
-        );
-      });
+    for (const call of calls) {
+      assert.equal(call.headers.get('authorization'), 'Bearer gho_user');
     }
-  }
-
-  test('resends every selected repository of an existing selected secret', async () => {
-    const pair = await keypair();
-    const listing = `GET ${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE/repositories`;
-    const next = `https://api.github.com${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE/repositories?per_page=100&page=2`;
-    const { fetch, calls } = mockFetch(
-      organizationSecret(
-        pair,
-        {
-          data: {
-            name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE',
-            visibility: 'selected',
-            selected_repositories_url: `https://api.github.com${organizationBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE/repositories`,
-          },
-        },
-        {
-          [listing]: ({ url }) =>
-            url.searchParams.get('page') === '2'
-              ? { data: { total_count: 3, repositories: [{ id: 30 }] } }
-              : {
-                  data: {
-                    total_count: 3,
-                    repositories: [{ id: 10 }, { id: 20 }],
-                  },
-                  headers: { link: `<${next}>; rel="next"` },
-                },
-        },
-      ),
-    );
-    await organization(fetch).saveSecrets(names, { oauth: 'sk-ant-oat01-org' });
-    const put = calls.find((call) => call.method === 'PUT');
-    assert.equal(put.body.visibility, 'selected');
-    assert.deepEqual(put.body.selected_repository_ids, [10, 20, 30]);
-    const listed = calls.find((call) => call.key === listing);
-    assert.equal(new URL(listed.url).searchParams.get('per_page'), '100');
-    assert.equal(listed.headers.get('authorization'), 'Bearer gho_user');
   });
 
-  for (const selection of ['selected', null]) {
-    test(`refuses to rewrite a selected secret when the installation repository selection is ${selection}`, async () => {
-      const pair = await keypair();
-      const { fetch, calls } = mockFetch({
-        ...organizationSecret(pair, {
-          data: {
-            name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE',
-            visibility: 'selected',
-          },
-        }),
-        [`GET ${organizationBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]:
-          NOT_FOUND,
+  test('scopes every organization secret it writes to the same repositories', async () => {
+    const pair = await keypair();
+    const { fetch, calls } = mockFetch(
+      organizationSecret(pair, {
         [`PUT ${organizationBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: {
           status: 201,
         },
-      });
+      }),
+    );
+    await organization(fetch, [42]).saveSecrets(names, {
+      oauth: 'sk-ant-oat01-org',
+      push: 'github_pat_org',
+    });
+    const puts = calls.filter((call) => call.method === 'PUT');
+    assert.equal(puts.length, 2);
+    for (const put of puts) {
+      assert.equal(put.body.visibility, 'selected');
+      assert.deepEqual(put.body.selected_repository_ids, [42]);
+    }
+  });
+
+  for (const repositories of [null, []]) {
+    test(`refuses to write an organization secret with ${JSON.stringify(repositories)} repositories`, async () => {
+      const pair = await keypair();
+      const { fetch, calls } = mockFetch(organizationSecret(pair));
       await assert.rejects(
-        organization(fetch, selection).saveSecrets(names, {
+        organization(fetch, repositories).saveSecrets(names, {
           oauth: 'sk-ant-oat01-org',
-          push: 'github_pat_org',
         }),
-        (error) =>
-          error instanceof ValidationError &&
-          error.message ===
-            'This organization secret is shared with selected repositories that ureview cannot see. Rotate it with `gh secret set --org` instead.',
+        unscoped,
       );
       assert.equal(
         calls.some((call) => call.method === 'PUT'),
         false,
       );
-      assert.equal(
-        calls.some((call) => call.key.endsWith('/repositories')),
-        false,
-      );
     });
   }
-
-  test('refuses to write an organization secret whose visibility is unknown', async () => {
-    const pair = await keypair();
-    const { fetch, calls } = mockFetch(
-      organizationSecret(pair, {
-        data: { name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE', visibility: 'internal' },
-      }),
-    );
-    await assert.rejects(
-      organization(fetch).saveSecrets(names, { oauth: 'sk-ant-oat01-org' }),
-      (error) => error instanceof GitHubError && error.status === 502,
-    );
-    assert.equal(
-      calls.some((call) => call.method === 'PUT'),
-      false,
-    );
-  });
-
-  test('throws GitHubError when the existing secret lookup fails', async () => {
-    const pair = await keypair();
-    const { fetch, calls } = mockFetch(
-      organizationSecret(pair, {
-        status: 403,
-        data: { message: 'Forbidden' },
-      }),
-    );
-    await assert.rejects(
-      organization(fetch).saveSecrets(names, { oauth: 'sk-ant-oat01-org' }),
-      (error) => error instanceof GitHubError && error.status === 403,
-    );
-    assert.equal(
-      calls.some((call) => call.method === 'PUT'),
-      false,
-    );
-  });
 
   test('throws GitHubError when a PUT fails', async () => {
     const pair = await keypair();

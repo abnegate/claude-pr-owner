@@ -5,35 +5,32 @@ import { GitHubError } from './GitHubError.js';
 import { encrypt } from './secret.js';
 import { ValidationError } from './ValidationError.js';
 
-export const VISIBILITY = 'all';
+export const VISIBILITY = 'selected';
 
-const SELECTED = 'selected';
-const VISIBILITIES = new Set([VISIBILITY, 'private', SELECTED]);
-const UNRESTRICTED = 'all';
-const HIDDEN_REPOSITORIES =
-  'This organization secret is shared with selected repositories that ureview cannot see. Rotate it with `gh secret set --org` instead.';
+const KINDS = Object.freeze(['oauth', 'push', 'apiKey']);
+export const UNSCOPED = 'Choose the repositories ureview runs in.';
 
 export class Store {
   #fetch;
   #token;
   #base;
-  #visibility;
-  #repositorySelection;
+  #organization;
+  #repositories;
   #Failure;
 
   constructor({
     fetch,
     token,
     base,
-    visibility = null,
-    repositorySelection = null,
+    organization = false,
+    repositories = null,
     Failure = GitHubError,
   }) {
     this.#fetch = fetch;
     this.#token = token;
     this.#base = base;
-    this.#visibility = visibility;
-    this.#repositorySelection = repositorySelection;
+    this.#organization = organization;
+    this.#repositories = repositories;
     this.#Failure = Failure;
   }
 
@@ -46,29 +43,66 @@ export class Store {
     });
   }
 
-  static organization({
-    fetch,
-    token,
-    organization,
-    repositorySelection = null,
-  }) {
+  static organization({ fetch, token, organization, repositories = null }) {
     return new Store({
       fetch,
       token,
       base: `/orgs/${encodeURIComponent(organization)}/actions`,
-      visibility: VISIBILITY,
-      repositorySelection,
+      organization: true,
+      repositories,
     });
   }
 
   async status(names) {
-    const [config, oauth, push, apiKey] = await Promise.all([
-      this.variable(names).then(parse),
-      this.#secretExists(names.oauth),
-      this.#secretExists(names.push),
-      this.#secretExists(names.apiKey),
+    const [variable, found] = await Promise.all([
+      this.#variable(names),
+      Promise.all(KINDS.map((kind) => this.#secret(names[kind]))),
     ]);
-    return { config, secrets: { oauth, push, apiKey } };
+    const config = parse(variable === null ? null : valueOf(variable));
+    const secrets = Object.fromEntries(
+      KINDS.map((kind, index) => [kind, found[index] !== null]),
+    );
+    if (!this.#organization) {
+      return { config, secrets };
+    }
+    return {
+      config,
+      secrets,
+      repositories: await this.#selected(names, variable),
+      exposed: KINDS.filter(
+        (kind, index) =>
+          found[index] !== null && found[index].visibility !== VISIBILITY,
+      ),
+    };
+  }
+
+  async repositories(names) {
+    return this.#selected(names, await this.#variable(names));
+  }
+
+  async restrict(names) {
+    const scope = this.#scope();
+    const found = await Promise.all(
+      KINDS.map((kind) => this.#secret(names[kind])),
+    );
+    await Promise.all([
+      this.#send(
+        'PATCH',
+        `/variables/${encodeURIComponent(names.variable)}`,
+        [204, 404],
+        scope,
+      ),
+      ...KINDS.filter(
+        (kind, index) => found[index]?.visibility === VISIBILITY,
+      ).map((kind) =>
+        this.#send(
+          'PUT',
+          `/secrets/${encodeURIComponent(names[kind])}/repositories`,
+          [204],
+          { selected_repository_ids: scope.selected_repository_ids },
+        ),
+      ),
+    ]);
   }
 
   async inherited(names) {
@@ -98,7 +132,7 @@ export class Store {
     if (updated.status === 404) {
       await this.#send('POST', '/variables', [201], {
         ...body,
-        ...this.#created(),
+        ...this.#scope(),
       });
     }
   }
@@ -112,17 +146,14 @@ export class Store {
       return;
     }
     const { data } = await this.#send('GET', '/secrets/public-key', [200]);
-    const scopes = await Promise.all(
-      values.map(([name]) => this.#secretScope(name)),
-    );
     const writes = await Promise.allSettled(
-      values.map(async ([name, value], index) => {
+      values.map(async ([name, value]) => {
         const encrypted = await encrypt(data.key, value);
         await this.#send(
           'PUT',
           `/secrets/${encodeURIComponent(name)}`,
           [201, 204],
-          { encrypted_value: encrypted, key_id: data.key_id, ...scopes[index] },
+          { encrypted_value: encrypted, key_id: data.key_id, ...this.#scope() },
         );
       }),
     );
@@ -160,15 +191,8 @@ export class Store {
   }
 
   async variable(names) {
-    const { status, data } = await this.#send(
-      'GET',
-      `/variables/${encodeURIComponent(names.variable)}`,
-      [200, 404],
-    );
-    if (status === 404) {
-      return null;
-    }
-    return typeof data?.value === 'string' ? data.value : '';
+    const variable = await this.#variable(names);
+    return variable === null ? null : valueOf(variable);
   }
 
   async removeSecrets(names, kinds) {
@@ -195,37 +219,46 @@ export class Store {
     return status === 200;
   }
 
-  async #secretScope(name) {
-    if (this.#visibility === null) {
-      return {};
-    }
-    const suffix = `/secrets/${encodeURIComponent(name)}`;
-    const { status, data } = await this.#send('GET', suffix, [200, 404]);
-    if (status === 404) {
-      return this.#created();
-    }
-    const visibility = data?.visibility;
-    if (!VISIBILITIES.has(visibility)) {
-      throw new this.#Failure(502, 'GET', `${this.#base}${suffix}`);
-    }
-    if (visibility !== SELECTED) {
-      return { visibility };
-    }
-    if (this.#repositorySelection !== UNRESTRICTED) {
-      throw new ValidationError(HIDDEN_REPOSITORIES);
-    }
-    const repositories = await this.#paginate(
-      `${suffix}/repositories?per_page=100`,
-      'repositories',
+  async #variable(names) {
+    const { status, data } = await this.#send(
+      'GET',
+      `/variables/${encodeURIComponent(names.variable)}`,
+      [200, 404],
     );
-    return {
-      visibility,
-      selected_repository_ids: repositories.map((repository) => repository.id),
-    };
+    return status === 404 ? null : (data ?? {});
   }
 
-  #created() {
-    return this.#visibility === null ? {} : { visibility: this.#visibility };
+  async #selected(names, variable) {
+    if (variable?.visibility !== VISIBILITY) {
+      return null;
+    }
+    const repositories = await this.#paginate(
+      `/variables/${encodeURIComponent(names.variable)}/repositories?per_page=100`,
+      'repositories',
+    );
+    return repositories.map((repository) => repository.id);
+  }
+
+  async #secret(name) {
+    const { status, data } = await this.#send(
+      'GET',
+      `/secrets/${encodeURIComponent(name)}`,
+      [200, 404],
+    );
+    return status === 404 ? null : (data ?? {});
+  }
+
+  #scope() {
+    if (!this.#organization) {
+      return {};
+    }
+    if (!Array.isArray(this.#repositories) || this.#repositories.length === 0) {
+      throw new ValidationError(UNSCOPED);
+    }
+    return {
+      visibility: VISIBILITY,
+      selected_repository_ids: this.#repositories,
+    };
   }
 
   #paginate(suffix, key) {
@@ -254,4 +287,8 @@ export class Store {
 
 function matches(entry, name) {
   return typeof entry?.name === 'string' && entry.name.toUpperCase() === name;
+}
+
+function valueOf(variable) {
+  return typeof variable.value === 'string' ? variable.value : '';
 }
