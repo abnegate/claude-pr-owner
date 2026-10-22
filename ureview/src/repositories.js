@@ -12,7 +12,7 @@ import {
 import { names } from './names.js';
 import { empty, json } from './response.js';
 import { validateTokens } from './secret.js';
-import { ABSENT, Store } from './Store.js';
+import { Store } from './Store.js';
 
 const READ = Object.freeze({
   secrets: 'read',
@@ -27,7 +27,7 @@ const WRITE = Object.freeze({
 const ORGANIZATION = 'Organization';
 const UNINHERITED = Object.freeze({
   config: null,
-  secrets: ABSENT,
+  secrets: Object.freeze({ oauth: false, push: false, apiKey: false }),
 });
 
 export async function list(context) {

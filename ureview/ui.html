@@ -1249,10 +1249,6 @@
         gap: 16px;
       }
 
-      .token-grid > .wide {
-        grid-column: 1 / -1;
-      }
-
       .chip {
         display: inline-flex;
         align-items: center;
@@ -1817,85 +1813,6 @@
               Without it Claude pushes with GITHUB_TOKEN.
             </p>
           </div>
-          <div class="field wide">
-            <div class="field-head">
-              <label class="label" data-for="openai"
-                >OpenAI API key<span class="optional">optional</span></label
-              >
-              <span
-                class="chip"
-                data-part="openai-chip"
-                data-id="openai-chip"
-              ></span>
-            </div>
-            <input
-              class="input"
-              type="password"
-              name="openai"
-              placeholder="sk-…"
-              autocomplete="new-password"
-              autocapitalize="off"
-              spellcheck="false"
-              data-describe="openai-chip openai-hint"
-            />
-            <p class="hint" data-id="openai-hint">
-              Lets the nightly runs add GPT reviewers alongside Claude.
-            </p>
-          </div>
-          <div class="field">
-            <div class="field-head">
-              <label class="label" data-for="deepApiKey"
-                >Deep review Anthropic key<span class="optional"
-                  >optional</span
-                ></label
-              >
-              <span
-                class="chip"
-                data-part="deep-api-key-chip"
-                data-id="deep-api-key-chip"
-              ></span>
-            </div>
-            <input
-              class="input"
-              type="password"
-              name="deepApiKey"
-              placeholder="sk-ant-api…"
-              autocomplete="new-password"
-              autocapitalize="off"
-              spellcheck="false"
-              data-describe="deep-api-key-chip deep-api-key-hint"
-            />
-            <p class="hint" data-id="deep-api-key-hint">
-              Used only by the one-off deep security review, billed separately.
-            </p>
-          </div>
-          <div class="field">
-            <div class="field-head">
-              <label class="label" data-for="deepOpenai"
-                >Deep review OpenAI key<span class="optional"
-                  >optional</span
-                ></label
-              >
-              <span
-                class="chip"
-                data-part="deep-openai-chip"
-                data-id="deep-openai-chip"
-              ></span>
-            </div>
-            <input
-              class="input"
-              type="password"
-              name="deepOpenai"
-              placeholder="sk-…"
-              autocomplete="new-password"
-              autocapitalize="off"
-              spellcheck="false"
-              data-describe="deep-openai-chip deep-openai-hint"
-            />
-            <p class="hint" data-id="deep-openai-hint">
-              Used only by the one-off deep security review, billed separately.
-            </p>
-          </div>
         </div>
         <div class="actions">
           <button type="submit" class="button">Save tokens</button>
@@ -2033,20 +1950,10 @@
       const TOAST_DURATION = 3200;
       const SECOND = 1000;
 
-      const TOKEN_KINDS = [
-        'oauth',
-        'push',
-        'openai',
-        'deepApiKey',
-        'deepOpenai',
-      ];
-      const SECRET_KINDS = [...TOKEN_KINDS, 'apiKey'];
+      const TOKEN_KINDS = ['oauth', 'push'];
       const TOKEN_NAMES = Object.freeze({
         oauth: 'Claude token',
-        push: 'push PAT',
-        openai: 'OpenAI API key',
-        deepApiKey: 'deep review Anthropic key',
-        deepOpenai: 'deep review OpenAI key',
+        push: 'push token',
       });
 
       const TOKEN_STATES = Object.freeze({
@@ -2368,9 +2275,11 @@
       }
 
       function normalizeSecrets(value) {
-        return Object.fromEntries(
-          SECRET_KINDS.map((kind) => [kind, value?.[kind] === true]),
-        );
+        return {
+          oauth: value?.oauth === true,
+          push: value?.push === true,
+          apiKey: value?.apiKey === true,
+        };
       }
 
       function applyStatus(target, data) {
@@ -2609,9 +2518,6 @@
           group(`${scope} secrets`, [
             `UREVIEW_OAUTH_TOKEN_${key}`,
             `UREVIEW_PUSH_TOKEN_${key}`,
-            `UREVIEW_OPENAI_API_KEY_${key}`,
-            `UREVIEW_DEEP_API_KEY_${key}`,
-            `UREVIEW_DEEP_OPENAI_API_KEY_${key}`,
           ]),
         );
       }
@@ -2646,13 +2552,8 @@
           tokens: part(fragment, 'tokens'),
           note: part(fragment, 'note'),
           tokenNote: part(fragment, 'token-note'),
-          chips: {
-            oauth: part(fragment, 'oauth-chip'),
-            push: part(fragment, 'push-chip'),
-            openai: part(fragment, 'openai-chip'),
-            deepApiKey: part(fragment, 'deep-api-key-chip'),
-            deepOpenai: part(fragment, 'deep-openai-chip'),
-          },
+          oauthChip: part(fragment, 'oauth-chip'),
+          pushChip: part(fragment, 'push-chip'),
           apiKeyChip: part(fragment, 'api-key-chip'),
           settingsStatus: part(fragment, 'settings-status'),
           tokensStatus: part(fragment, 'tokens-status'),
@@ -2785,8 +2686,9 @@
       function renderSummary(target) {
         const view = target.view;
         const config = effectiveConfig(target);
-        const missingToken =
-          config !== null && tokenState(target, 'oauth') === 'missing';
+        const oauth = tokenState(target, 'oauth');
+        const push = tokenState(target, 'push');
+        const missingToken = config !== null && oauth === 'missing';
 
         renderBadge(target);
         view.tokenWarning.hidden = !missingToken;
@@ -2802,10 +2704,12 @@
               ]),
         );
 
-        for (const kind of TOKEN_KINDS) {
-          const token = TOKEN_STATES[tokenState(target, kind)];
-          view.chips[kind].className = token.className;
-          view.chips[kind].textContent = token.text;
+        for (const [chip, key] of [
+          [view.oauthChip, oauth],
+          [view.pushChip, push],
+        ]) {
+          chip.className = TOKEN_STATES[key].className;
+          chip.textContent = TOKEN_STATES[key].text;
         }
         const apiKey = API_KEY_STATES[tokenState(target, 'apiKey')];
         view.apiKeyChip.hidden = apiKey === undefined;
@@ -2820,7 +2724,8 @@
         view.tokenNote.hidden = !missingToken;
         view.remove.hidden =
           target.config === null &&
-          TOKEN_KINDS.every((kind) => target.secrets[kind] === false);
+          target.secrets.oauth === false &&
+          target.secrets.push === false;
         renderSubmit(target);
       }
 
@@ -2914,24 +2819,20 @@
       }
 
       function savedTokensMessage(tokens) {
-        const names = listNames(
-          TOKEN_KINDS.filter((kind) => tokens[kind] !== undefined).map(
-            (kind) => TOKEN_NAMES[kind],
-          ),
-        );
-        return `${names.charAt(0).toUpperCase()}${names.slice(1)} saved.`;
+        if (tokens.oauth !== undefined && tokens.push !== undefined) {
+          return 'Claude token and push PAT saved.';
+        }
+        return tokens.oauth !== undefined
+          ? 'Claude token saved.'
+          : 'Push PAT saved.';
       }
 
       function applyTokens(target, tokens) {
         target.view.tokens.reset();
         target.secrets = {
           ...target.secrets,
-          ...Object.fromEntries(
-            TOKEN_KINDS.map((kind) => [
-              kind,
-              tokens[kind] !== undefined || target.secrets[kind],
-            ]),
-          ),
+          oauth: tokens.oauth !== undefined || target.secrets.oauth,
+          push: tokens.push !== undefined || target.secrets.push,
         };
         renderSummary(target);
       }
@@ -3096,7 +2997,7 @@
         if (Object.keys(tokens).length === 0) {
           reportFieldError(
             new FieldError(
-              'Paste a token first.',
+              'Paste a Claude token or a push PAT first.',
               view.tokens.elements.namedItem('oauth'),
             ),
             view.tokensStatus,

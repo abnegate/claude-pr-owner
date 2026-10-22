@@ -802,9 +802,6 @@ describe('App and rate limit errors', () => {
         [`${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: NOT_FOUND,
         [`${base}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: NOT_FOUND,
         [`${base}/secrets/UREVIEW_API_KEY_ABNEGATE`]: NOT_FOUND,
-        [`${base}/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE`]: NOT_FOUND,
-        [`${base}/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE`]: NOT_FOUND,
-        [`${base}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE`]: NOT_FOUND,
       },
     });
     const response = await context.send({

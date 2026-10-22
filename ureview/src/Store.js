@@ -2,14 +2,10 @@ import { parse, serialize } from './config.js';
 import { GitHubAppError } from './GitHubAppError.js';
 import { paginate, request } from './github.js';
 import { GitHubError } from './GitHubError.js';
-import { SECRETS } from './names.js';
-import { encrypt, TOKENS } from './secret.js';
+import { encrypt } from './secret.js';
 import { ValidationError } from './ValidationError.js';
 
 export const VISIBILITY = 'all';
-export const ABSENT = Object.freeze(
-  Object.fromEntries(SECRETS.map((kind) => [kind, false])),
-);
 
 const SELECTED = 'selected';
 const VISIBILITIES = new Set([VISIBILITY, 'private', SELECTED]);
@@ -66,11 +62,13 @@ export class Store {
   }
 
   async status(names) {
-    const [config, secrets] = await Promise.all([
+    const [config, oauth, push, apiKey] = await Promise.all([
       this.variable(names).then(parse),
-      this.#secrets(names),
+      this.#secretExists(names.oauth),
+      this.#secretExists(names.push),
+      this.#secretExists(names.apiKey),
     ]);
-    return { config, secrets };
+    return { config, secrets: { oauth, push, apiKey } };
   }
 
   async inherited(names) {
@@ -81,12 +79,11 @@ export class Store {
     const variable = variables.find((entry) => matches(entry, names.variable));
     return {
       config: variable === undefined ? null : parse(variable.value),
-      secrets: Object.fromEntries(
-        SECRETS.map((kind) => [
-          kind,
-          secrets.some((entry) => matches(entry, names[kind])),
-        ]),
-      ),
+      secrets: {
+        oauth: secrets.some((entry) => matches(entry, names.oauth)),
+        push: secrets.some((entry) => matches(entry, names.push)),
+        apiKey: secrets.some((entry) => matches(entry, names.apiKey)),
+      },
     };
   }
 
@@ -106,10 +103,11 @@ export class Store {
     }
   }
 
-  async saveSecrets(names, tokens) {
-    const values = TOKENS.filter(
-      (kind) => typeof tokens[kind] === 'string',
-    ).map((kind) => [names[kind], tokens[kind]]);
+  async saveSecrets(names, { oauth, push }) {
+    const values = [
+      [names.oauth, oauth],
+      [names.push, push],
+    ].filter(([, value]) => typeof value === 'string');
     if (values.length === 0) {
       return;
     }
@@ -141,10 +139,10 @@ export class Store {
         `/variables/${encodeURIComponent(names.variable)}`,
         [204, 404],
       ),
-      ...SECRETS.map((kind) =>
+      ...[names.oauth, names.apiKey, names.push].map((name) =>
         this.#send(
           'DELETE',
-          `/secrets/${encodeURIComponent(names[kind])}`,
+          `/secrets/${encodeURIComponent(name)}`,
           [204, 404],
         ),
       ),
@@ -152,11 +150,13 @@ export class Store {
   }
 
   async presence(names) {
-    const [variable, secrets] = await Promise.all([
+    const [variable, oauth, push, apiKey] = await Promise.all([
       this.#exists(`/variables/${encodeURIComponent(names.variable)}`),
-      this.#secrets(names),
+      this.#secretExists(names.oauth),
+      this.#secretExists(names.push),
+      this.#secretExists(names.apiKey),
     ]);
-    return { variable, ...secrets };
+    return { variable, oauth, push, apiKey };
   }
 
   async variable(names) {
@@ -184,15 +184,6 @@ export class Store {
     const settled = (status) =>
       kinds.filter((_, index) => deletes[index].status === status);
     return { removed: settled('fulfilled'), failed: settled('rejected') };
-  }
-
-  async #secrets(names) {
-    const present = await Promise.all(
-      SECRETS.map((kind) => this.#secretExists(names[kind])),
-    );
-    return Object.fromEntries(
-      SECRETS.map((kind, index) => [kind, present[index]]),
-    );
   }
 
   #secretExists(name) {

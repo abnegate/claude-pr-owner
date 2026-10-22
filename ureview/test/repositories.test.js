@@ -3,7 +3,7 @@ import { verify } from 'node:crypto';
 import { describe, test } from 'node:test';
 import sodium from 'libsodium-wrappers';
 import { createApp } from '../src/app.js';
-import { ABSENT, actions, mutations } from './support/actions.js';
+import { actions, mutations } from './support/actions.js';
 import { mockFetch, NOT_FOUND } from './support/fetch.js';
 import {
   environment,
@@ -24,7 +24,7 @@ const WRITE = {
 };
 const NONE = {
   config: null,
-  secrets: ABSENT,
+  secrets: { oauth: false, push: false, apiKey: false },
 };
 const keyPair = sodium.crypto_box_keypair();
 const repositoryKey = sodium.to_base64(
@@ -132,18 +132,10 @@ function writeRoutes({
     },
     [`PUT ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 201 },
     [`PUT ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: { status: 204 },
-    [`PUT ${base}/secrets/UREVIEW_OPENAI_API_KEY_${key}`]: { status: 201 },
-    [`PUT ${base}/secrets/UREVIEW_DEEP_API_KEY_${key}`]: { status: 201 },
-    [`PUT ${base}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_${key}`]: {
-      status: 201,
-    },
     [`DELETE ${base}/variables/UREVIEW_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_API_KEY_${key}`]: NOT_FOUND,
-    [`DELETE ${base}/secrets/UREVIEW_OPENAI_API_KEY_${key}`]: NOT_FOUND,
-    [`DELETE ${base}/secrets/UREVIEW_DEEP_API_KEY_${key}`]: NOT_FOUND,
-    [`DELETE ${base}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_${key}`]: NOT_FOUND,
   };
 }
 
@@ -171,9 +163,6 @@ function statusRoutes({
     },
     [`GET ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: NOT_FOUND,
     [`GET ${base}/secrets/UREVIEW_API_KEY_${key}`]: NOT_FOUND,
-    [`GET ${base}/secrets/UREVIEW_OPENAI_API_KEY_${key}`]: NOT_FOUND,
-    [`GET ${base}/secrets/UREVIEW_DEEP_API_KEY_${key}`]: NOT_FOUND,
-    [`GET ${base}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_${key}`]: NOT_FOUND,
     [`GET ${base}/organization-variables`]: {
       data: {
         total_count: 2,
@@ -351,7 +340,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
       name: 'edge',
       fullName: 'abnegate/edge',
       config: { review: true, severities: 'critical,high' },
-      secrets: { ...ABSENT, oauth: true },
+      secrets: { oauth: true, push: false, apiKey: false },
       inherited: NONE,
     });
     assert.deepEqual(keys(calls).slice(0, 3), [
@@ -369,10 +358,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
     const settings = calls.slice(3);
     assert.deepEqual(keys(settings).sort(), [
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
-      'GET /repos/abnegate/edge/actions/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE',
-      'GET /repos/abnegate/edge/actions/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE',
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
-      'GET /repos/abnegate/edge/actions/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE',
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
       'GET /repos/abnegate/edge/actions/variables/UREVIEW_ABNEGATE',
     ]);
@@ -390,7 +376,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(response.data.inherited, {
       config: { improvement: true },
-      secrets: { ...ABSENT, push: true },
+      secrets: { oauth: false, push: true, apiKey: false },
     });
     const inherited = calls.filter((call) =>
       call.key.includes('/actions/organization-'),
@@ -430,10 +416,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
     });
     assert.deepEqual(keys(actionsCalls(calls)).sort(), [
       'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
-      'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE',
-      'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE',
       'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
-      'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE',
       'GET /repos/Abnegate/Edge/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
       'GET /repos/Abnegate/Edge/actions/variables/UREVIEW_ABNEGATE',
     ]);
@@ -448,10 +431,7 @@ describe('GET /api/repositories/:owner/:repository', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(keys(actionsCalls(calls)).sort(), [
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_API_KEY_SOME_USER',
-      'GET /repos/abnegate/edge/actions/secrets/UREVIEW_DEEP_API_KEY_SOME_USER',
-      'GET /repos/abnegate/edge/actions/secrets/UREVIEW_DEEP_OPENAI_API_KEY_SOME_USER',
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_OAUTH_TOKEN_SOME_USER',
-      'GET /repos/abnegate/edge/actions/secrets/UREVIEW_OPENAI_API_KEY_SOME_USER',
       'GET /repos/abnegate/edge/actions/secrets/UREVIEW_PUSH_TOKEN_SOME_USER',
       'GET /repos/abnegate/edge/actions/variables/UREVIEW_SOME_USER',
     ]);
@@ -480,9 +460,14 @@ describe('GET /api/repositories/:owner/:repository', () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.data.config, null);
-    assert.deepEqual(response.data.secrets, { ...ABSENT, apiKey: true });
+    assert.deepEqual(response.data.secrets, {
+      oauth: false,
+      push: false,
+      apiKey: true,
+    });
     assert.deepEqual(response.data.inherited.secrets, {
-      ...ABSENT,
+      oauth: false,
+      push: false,
       apiKey: true,
     });
   });
@@ -550,18 +535,15 @@ describe('repository push gate', () => {
       routes[
         'GET /repos/abnegate/edge-renamed/actions/variables/UREVIEW_ABNEGATE'
       ] = NOT_FOUND;
-      for (const secret of [
-        'OAUTH_TOKEN',
-        'PUSH_TOKEN',
-        'API_KEY',
-        'OPENAI_API_KEY',
-        'DEEP_API_KEY',
-        'DEEP_OPENAI_API_KEY',
-      ]) {
-        routes[
-          `GET /repos/abnegate/edge-renamed/actions/secrets/UREVIEW_${secret}_ABNEGATE`
-        ] = NOT_FOUND;
-      }
+      routes[
+        'GET /repos/abnegate/edge-renamed/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE'
+      ] = NOT_FOUND;
+      routes[
+        'GET /repos/abnegate/edge-renamed/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE'
+      ] = NOT_FOUND;
+      routes[
+        'GET /repos/abnegate/edge-renamed/actions/secrets/UREVIEW_API_KEY_ABNEGATE'
+      ] = NOT_FOUND;
       const { send, calls } = client(routes);
       const response = await send(method, path, body, query);
 
@@ -813,35 +795,6 @@ describe('PUT /api/repositories/:owner/:repository/tokens', () => {
     }
   });
 
-  test('writes the OpenAI and deep review keys to their user-named secrets', async () => {
-    const { send, calls } = client(writeRoutes());
-    const response = await send(
-      'PUT',
-      '/api/repositories/abnegate/edge/tokens',
-      {
-        openai: 'sk-proj-nightly',
-        deepApiKey: 'sk-ant-api03-deep',
-        deepOpenai: 'sk-proj-deep',
-      },
-    );
-
-    assert.equal(response.status, 204);
-    const writes = calls.filter((call) => call.method === 'PUT');
-    assert.deepEqual(
-      Object.fromEntries(
-        writes.map((write) => [
-          write.key.split('/').pop(),
-          decrypt(write.body.encrypted_value),
-        ]),
-      ),
-      {
-        UREVIEW_OPENAI_API_KEY_ABNEGATE: 'sk-proj-nightly',
-        UREVIEW_DEEP_API_KEY_ABNEGATE: 'sk-ant-api03-deep',
-        UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE: 'sk-proj-deep',
-      },
-    );
-  });
-
   test('writes only the push token when only push is given', async () => {
     const { send, calls } = client(writeRoutes());
     const response = await send(
@@ -895,11 +848,6 @@ describe('PUT /api/repositories/:owner/:repository/tokens', () => {
     ['a secret name', { name: 'UREVIEW_OAUTH_TOKEN_SOMEONE', oauth: 'token' }],
     ['a secret name as the key', { UREVIEW_OAUTH_TOKEN_SOMEONE: 'token' }],
     ['an api key', { oauth: 'token', apiKey: 'sk-ant-api03-key' }],
-    ['an OpenAI key without the sk- prefix', { openai: 'proj-key' }],
-    ['an Anthropic key as the OpenAI key', { openai: 'sk-ant-api03-key' }],
-    ['an OAuth token as the deep API key', { deepApiKey: 'sk-ant-oat01-key' }],
-    ['an OpenAI key as the deep API key', { deepApiKey: 'sk-proj-key' }],
-    ['an Anthropic key as the deep OpenAI key', { deepOpenai: 'sk-ant-api03' }],
     ['an empty body', {}],
     ['only blank values', { oauth: '   ', push: '' }],
     ['a token with whitespace inside', { oauth: 'two words' }],
@@ -934,9 +882,6 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
   const base = '/repos/abnegate/edge/actions';
   const oauth = 'sk-ant-oat01-enrol';
   const push = 'github_pat_enrol';
-  const openai = 'sk-proj-enrol';
-  const deepApiKey = 'sk-ant-api03-enrol';
-  const deepOpenai = 'sk-proj-deep-enrol';
 
   function enrolment(options = {}, overrides = {}) {
     const { type, ...fake } = options;
@@ -949,17 +894,6 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     return { send, calls, state: store.state };
   }
 
-  function inherited(secrets) {
-    return {
-      [`GET ${base}/organization-variables`]: {
-        data: { total_count: 0, variables: [] },
-      },
-      [`GET ${base}/organization-secrets`]: {
-        data: { total_count: secrets.length, secrets },
-      },
-    };
-  }
-
   test('writes the tokens, then the config, with a repository-scoped write token', async () => {
     const { send, calls, state } = enrolment();
     const response = await send('PUT', path, {
@@ -970,7 +904,7 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(response.data, {
       config: { review: true, severities: 'critical,high' },
-      secrets: { ...ABSENT, oauth: true, push: true },
+      secrets: { oauth: true, push: true, apiKey: false },
     });
     const mint = calls.find(
       (call) => call.key === 'POST /app/installations/42/access_tokens',
@@ -1089,7 +1023,7 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(response.data, {
       config: { review: true, severities: 'critical,high' },
-      secrets: { ...ABSENT, oauth: true },
+      secrets: { oauth: true, push: false, apiKey: false },
     });
     assert.equal(
       calls.some((call) => call.method === 'DELETE'),
@@ -1282,14 +1216,7 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
   });
 
   test('refuses to enrol without a Claude token and writes nothing', async () => {
-    for (const tokens of [
-      {},
-      { push },
-      { openai },
-      { deepApiKey },
-      { deepOpenai },
-      { push, openai, deepApiKey, deepOpenai },
-    ]) {
+    for (const tokens of [{}, { push }]) {
       const { send, calls } = enrolment();
       const response = await send('PUT', path, {
         config: { review: true },
@@ -1324,6 +1251,14 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
   }
 
   test('enrols without tokens when the organization provides a Claude token', async () => {
+    const inherited = (secrets) => ({
+      [`GET ${base}/organization-variables`]: {
+        data: { total_count: 0, variables: [] },
+      },
+      [`GET ${base}/organization-secrets`]: {
+        data: { total_count: secrets.length, secrets },
+      },
+    });
     const allowed = enrolment(
       { type: 'Organization' },
       inherited([{ name: 'UREVIEW_OAUTH_TOKEN_ABNEGATE' }]),
@@ -1347,99 +1282,6 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     assert.deepEqual(mutations(refused.calls), []);
   });
 
-  test('refuses to enrol when only OpenAI or deep review secrets exist', async () => {
-    const { send, calls } = enrolment({
-      secrets: ['openai', 'deepApiKey', 'deepOpenai'],
-    });
-    const response = await send('PUT', path, {
-      config: { review: true },
-      tokens: {},
-    });
-
-    assert.equal(response.status, 400);
-    assert.equal(response.data.message, 'Provide a Claude token to enrol.');
-    assert.deepEqual(mutations(calls), []);
-  });
-
-  test('refuses to enrol when the organization provides only OpenAI or deep review keys', async () => {
-    const { send, calls } = enrolment(
-      { type: 'Organization' },
-      inherited([
-        { name: 'UREVIEW_OPENAI_API_KEY_ABNEGATE' },
-        { name: 'UREVIEW_DEEP_API_KEY_ABNEGATE' },
-        { name: 'UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE' },
-      ]),
-    );
-    const response = await send('PUT', path, {
-      config: { review: true },
-      tokens: { openai },
-    });
-
-    assert.equal(response.status, 400);
-    assert.equal(response.data.message, 'Provide a Claude token to enrol.');
-    assert.deepEqual(mutations(calls), []);
-  });
-
-  test('stores the OpenAI and deep review keys alongside the Claude token', async () => {
-    const { send, calls, state } = enrolment();
-    const response = await send('PUT', path, {
-      config: { review: true },
-      tokens: { oauth, openai, deepApiKey, deepOpenai },
-    });
-
-    assert.equal(response.status, 200);
-    assert.deepEqual(response.data.secrets, {
-      ...ABSENT,
-      oauth: true,
-      openai: true,
-      deepApiKey: true,
-      deepOpenai: true,
-    });
-    assert.deepEqual([...state.secrets].sort(), [
-      'deepApiKey',
-      'deepOpenai',
-      'oauth',
-      'openai',
-    ]);
-    const writes = mutations(calls).filter((call) => call.method === 'PUT');
-    assert.deepEqual(
-      Object.fromEntries(
-        writes.map((call) => [
-          call.key.split('/').pop(),
-          decrypt(call.body.encrypted_value),
-        ]),
-      ),
-      {
-        UREVIEW_OAUTH_TOKEN_ABNEGATE: oauth,
-        UREVIEW_OPENAI_API_KEY_ABNEGATE: openai,
-        UREVIEW_DEEP_API_KEY_ABNEGATE: deepApiKey,
-        UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE: deepOpenai,
-      },
-    );
-    assert.equal(state.variable, '{"review":true}');
-  });
-
-  test('rolls back new OpenAI and deep review keys when the config write fails', async () => {
-    const { send, state } = enrolment(
-      {},
-      { [`POST ${base}/variables`]: { status: 502, data: {} } },
-    );
-    const response = await send('PUT', path, {
-      config: { review: true },
-      tokens: { oauth, openai, deepApiKey, deepOpenai },
-    });
-
-    assert.equal(response.status, 502);
-    assert.deepEqual([...response.data.rolledBack].sort(), [
-      'deepApiKey',
-      'deepOpenai',
-      'oauth',
-      'openai',
-    ]);
-    assert.equal(state.secrets.size, 0);
-    assert.equal(state.variable, null);
-  });
-
   test('saves a push token alone once the user is enrolled', async () => {
     const { send, state } = enrolment({ variable: '{"review":true}' });
     const response = await send('PUT', path, {
@@ -1459,7 +1301,6 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     ['an invalid config', { config: { review: 'yes' }, tokens: { oauth } }],
     ['missing tokens', { config: {} }],
     ['an API key token', { config: {}, tokens: { apiKey: 'sk-ant-api' } }],
-    ['a malformed OpenAI key', { config: {}, tokens: { oauth, openai: 'x' } }],
     ['a token with whitespace', { config: {}, tokens: { oauth: 'a b' } }],
   ];
 
@@ -1476,7 +1317,7 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
 });
 
 describe('DELETE /api/repositories/:owner/:repository', () => {
-  test('removes the variable and every secret, tolerating missing ones', async () => {
+  test('removes the variable and all three secrets, tolerating missing ones', async () => {
     const { send, calls } = client(writeRoutes());
     const response = await send('DELETE', '/api/repositories/abnegate/edge');
 
@@ -1493,10 +1334,7 @@ describe('DELETE /api/repositories/:owner/:repository', () => {
     const deletes = calls.slice(3);
     assert.deepEqual(keys(deletes).sort(), [
       'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
-      'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE',
-      'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE',
       'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
-      'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE',
       'DELETE /repos/abnegate/edge/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
       'DELETE /repos/abnegate/edge/actions/variables/UREVIEW_ABNEGATE',
     ]);
