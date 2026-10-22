@@ -78,6 +78,11 @@ if node "$report" collect anthropic "$temp/failed.json" "$temp/unused.json" clau
   fail 'a failed Claude run was collected'
 fi
 expect_line "$temp/out" '::error::claude-opus-5-5 failed: api_error after 1 turns ($0.00).'
+jq -n '{is_error: true, terminal_reason: "api_error", api_error_status: 529, num_turns: 18, total_cost_usd: 0.6}' > "$temp/overloaded.json"
+if node "$report" collect anthropic "$temp/overloaded.json" "$temp/unused.json" claude-fable-5-1 triage > "$temp/out"; then
+  fail 'an overloaded Claude run was collected'
+fi
+expect_line "$temp/out" '::error::claude-fable-5-1 failed: api_error (HTTP 529) after 18 turns ($0.60).'
 grep -q 'SECRET' "$temp/out" && fail 'collect printed model output'
 
 if node "$report" collect openai "$temp/missing.json" "$temp/unused.json" gpt-6.1-sol review > "$temp/out"; then
@@ -141,6 +146,11 @@ const server = http.createServer((request, response) => {
               },
             ]
           : [];
+    } else if (request.method === 'GET' && url.pathname === '/repos/acme/filed/issues') {
+      payload =
+        url.searchParams.get('page') === '1'
+          ? [{ number: 11, state: 'open', title: 'Filed', body: '<!-- security-review:fingerprint=a9ec607ab969fe7c -->' }]
+          : [];
     } else if (request.method === 'GET' && url.pathname.endsWith('/issues')) {
       payload = url.searchParams.get('page') === '1' ? issues : [];
     } else if (request.method === 'GET' && url.pathname.endsWith('/comments')) {
@@ -199,6 +209,15 @@ grep -q '^POST /repos/acme/app/issues/8/comments ' "$temp/api.log" && fail 'issu
 grep '^POST /repos/acme/app/issues ' "$temp/api.log" | head -1 | grep -q 'security-review:fingerprint=a9ec607ab969fe7c' \
   || fail 'issue body carries no fingerprint marker'
 grep -q 'blob/abc/app/controllers/api/x.php#L12' "$temp/api.log" || fail 'issue links the wrong location'
+
+# A rerun publishes with the plan's snapshot of tracked findings, taken before the first attempt filed anything.
+echo '[]' > "$WORK/known.json"
+jq -n --argjson a "$confirmed" '{model: "claude-fable-5-1", findings: [$a], resolved: []}' > "$temp/triage/0.json"
+: > "$temp/api.log"
+SINK=issues GITHUB_API_URL="$api" TARGET_REPOSITORY=acme/filed GITHUB_TOKEN=token GITHUB_SERVER_URL=https://github.com HEAD_SHA=abc \
+  node "$report" publish "$temp/triage" > "$temp/out"
+expect_line "$temp/out" 'New issues: 0. Flagged as resolved: 0.'
+grep -q '^POST /repos/acme/filed/issues ' "$temp/api.log" && fail 'a rerun filed a finding that is already an issue'
 
 # publish to code scanning against the stub API: new findings, kept tracked alerts, resolved ones dropped, duplicates not re-emitted.
 node "$report" areas "$temp/areas.txt" > /dev/null
@@ -283,6 +302,10 @@ if inputs["runner"].get("default") != "ubuntu-24.04":
 for name, job in jobs.items():
     if job.get("environment") != "${{ inputs.environment }}":
         raise SystemExit(f"FAIL: job {name} does not run in inputs.environment, so its secrets are not branch-protected")
+text = Path(".github/workflows/security-review.yml").read_text()
+seeds = re.findall(r"ARTIFACT_SECRET_KEY: (.*)", text)
+if len(seeds) != 6 or any(seed != "${{ secrets.app_private_key || secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}" for seed in seeds):
+    raise SystemExit(f"FAIL: the artifact key does not prefer the app private key, so rotating a model key breaks reruns: {set(seeds)}")
 if inputs["environment"].get("default") != "security-review":
     raise SystemExit("FAIL: environment does not default to security-review")
 PY
