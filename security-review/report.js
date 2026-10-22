@@ -20,12 +20,23 @@ const TOOL = 'ureview security review';
 const LABEL = 'security-review';
 const RULE_PREFIX = 'security-review/';
 const FINGERPRINT_KEY = 'securityReview/v1';
-const FINGERPRINT_MARKER = /<!-- security-review:fingerprint=([0-9a-f]{16}) -->/;
+const FINGERPRINT_MARKER =
+  /<!-- security-review:fingerprint=([0-9a-f]{16}) -->/;
 const LOCATION_MARKER = /\*\*Location:\*\* \[`([^`]+):(\d+)`\]/;
-const RESOLVED_MARKER ='<!-- security-review:resolved -->';
+const RESOLVED_MARKER = '<!-- security-review:resolved -->';
 
-const SEVERITY_SCORE = { critical: '9.5', high: '8.0', medium: '5.5', low: '3.0' };
-const SEVERITY_LEVEL = { critical: 'error', high: 'error', medium: 'warning', low: 'note' };
+const SEVERITY_SCORE = {
+  critical: '9.5',
+  high: '8.0',
+  medium: '5.5',
+  low: '3.0',
+};
+const SEVERITY_LEVEL = {
+  critical: 'error',
+  high: 'error',
+  medium: 'warning',
+  low: 'note',
+};
 
 const {
   BRANCH,
@@ -162,7 +173,10 @@ async function knownFromIssues() {
   );
   return issues
     .filter((issue) => !issue.pull_request)
-    .map((issue) => ({ issue, match: FINGERPRINT_MARKER.exec(issue.body ?? '') }))
+    .map((issue) => ({
+      issue,
+      match: FINGERPRINT_MARKER.exec(issue.body ?? ''),
+    }))
     .filter(({ match }) => match)
     .map(({ issue, match }) => {
       const location = LOCATION_MARKER.exec(issue.body) ?? [];
@@ -262,7 +276,7 @@ function collect(provider, input, output, label, kind) {
     const cost = Number(result?.total_cost_usd ?? 0).toFixed(2);
     if (!result || result.is_error || !result.structured_output) {
       throw new Error(
-        `${label} failed: ${result?.terminal_reason ?? 'no result'} after ${result?.num_turns ?? 0} turns ($${cost}).`,
+        `${label} failed: ${result?.terminal_reason ?? 'no result'}${result?.api_error_status ? ` (HTTP ${result.api_error_status})` : ''} after ${result?.num_turns ?? 0} turns ($${cost}).`,
       );
     }
     console.log(`${label}: ${result.num_turns} turns ($${cost}).`);
@@ -294,7 +308,9 @@ function candidates(directory, areaIndex) {
   writeJson(workPath('candidates.json'), merged);
   writeJson(workPath('known.json'), area.known);
   const open = area.known.filter((entry) => entry.state === 'open').length;
-  console.log(`Candidates: ${merged.length}. Open tracked findings to recheck: ${open}.`);
+  console.log(
+    `Candidates: ${merged.length}. Open tracked findings to recheck: ${open}.`,
+  );
   setOutput('triage', merged.length > 0 || open > 0);
 }
 
@@ -350,10 +366,19 @@ async function publishCodeScanning(findings, resolved, tracked) {
     const id = `${RULE_PREFIX}${fingerprint}`;
     rules.set(
       id,
-      sarifRule(id, finding.title, finding.severity, [finding.cwe.toLowerCase()]),
+      sarifRule(id, finding.title, finding.severity, [
+        finding.cwe.toLowerCase(),
+      ]),
     );
     results.push(
-      sarifResult(id, finding.severity, messageOf(finding), finding.file, finding.line, fingerprint),
+      sarifResult(
+        id,
+        finding.severity,
+        messageOf(finding),
+        finding.file,
+        finding.line,
+        fingerprint,
+      ),
     );
   }
   const created = results.length;
@@ -370,7 +395,14 @@ async function publishCodeScanning(findings, resolved, tracked) {
     const id = `${RULE_PREFIX}${entry.fingerprint}`;
     rules.set(id, sarifRule(id, entry.title, entry.severity, entry.tags));
     results.push(
-      sarifResult(id, entry.severity, entry.message, entry.file, entry.line, entry.fingerprint),
+      sarifResult(
+        id,
+        entry.severity,
+        entry.message,
+        entry.file,
+        entry.line,
+        entry.fingerprint,
+      ),
     );
   }
   const sarif = {
@@ -424,7 +456,10 @@ function issueBody(finding, fingerprint) {
 }
 
 async function publishIssues(findings, resolved, tracked) {
-  const seen = new Set(tracked.map((entry) => entry.fingerprint));
+  const filed = await knownFromIssues();
+  const seen = new Set(
+    [...tracked, ...filed].map((entry) => entry.fingerprint),
+  );
   let created = 0;
   for (const finding of findings) {
     const fingerprint = finding.duplicateOf ?? fingerprintOf(finding);
@@ -470,7 +505,9 @@ async function publish(directory) {
     resolved.delete(finding.duplicateOf);
   }
   const tracked = readJson(workPath('known.json')) ?? [];
-  console.log(`Confirmed findings: ${findings.length} from ${triages.length} triage runs.`);
+  console.log(
+    `Confirmed findings: ${findings.length} from ${triages.length} triage runs.`,
+  );
   if (SINK === Sink.CodeScanning) {
     await publishCodeScanning(findings, resolved, tracked);
     return;

@@ -386,7 +386,7 @@ jobs:
       - name: Pack context
         if: steps.plan.outputs.changed == 'true'
         env:
-          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+          ARTIFACT_SECRET_KEY: ${{ secrets.app_private_key || secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
         run: ureview/security-review/artifact.sh pack "$RUNNER_TEMP/security-review" "$RUNNER_TEMP/context.enc"
 
       - name: Upload context
@@ -456,7 +456,7 @@ jobs:
 
       - name: Unpack context
         env:
-          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+          ARTIFACT_SECRET_KEY: ${{ secrets.app_private_key || secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
         run: |
           ureview/security-review/artifact.sh unpack "$RUNNER_TEMP/context.enc" "$RUNNER_TEMP/security-review"
           echo "WORK=$RUNNER_TEMP/security-review" >> "$GITHUB_ENV"
@@ -531,7 +531,7 @@ jobs:
 
       - name: Pack findings
         env:
-          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+          ARTIFACT_SECRET_KEY: ${{ secrets.app_private_key || secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
         run: ureview/security-review/artifact.sh pack "$RUNNER_TEMP/review" "$RUNNER_TEMP/review.enc"
 
       - name: Upload findings
@@ -609,7 +609,7 @@ jobs:
 
       - name: Unpack
         env:
-          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+          ARTIFACT_SECRET_KEY: ${{ secrets.app_private_key || secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
         run: |
           set -euo pipefail
           ureview/security-review/artifact.sh unpack "$RUNNER_TEMP/context.enc" "$RUNNER_TEMP/security-review"
@@ -692,7 +692,7 @@ jobs:
 
       - name: Pack triage
         env:
-          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+          ARTIFACT_SECRET_KEY: ${{ secrets.app_private_key || secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
         run: ureview/security-review/artifact.sh pack "$RUNNER_TEMP/triage" "$RUNNER_TEMP/triage.enc"
 
       - name: Upload triage
@@ -752,7 +752,7 @@ jobs:
 
       - name: Unpack
         env:
-          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+          ARTIFACT_SECRET_KEY: ${{ secrets.app_private_key || secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
         run: |
           set -euo pipefail
           ureview/security-review/artifact.sh unpack "$RUNNER_TEMP/context.enc" "$RUNNER_TEMP/security-review"
