@@ -147,12 +147,32 @@ const server = http.createServer((request, response) => {
     fs.appendFileSync(log, `${request.method} ${request.url} ${body}\n`);
     const url = new URL(request.url, 'http://stub');
     let payload = { number: 100 };
-    if (request.method === 'GET' && url.pathname.endsWith('/issues')) {
+    let status = 200;
+    if (url.pathname === '/repos/acme/fresh/code-scanning/alerts') {
+      status = 404;
+      payload = { message: 'no analysis found' };
+    } else if (url.pathname === '/repos/acme/disabled/code-scanning/alerts') {
+      status = 403;
+      payload = { message: 'Code scanning is not enabled for this repository' };
+    } else if (url.pathname === '/repos/acme/broken/code-scanning/alerts') {
+      status = 500;
+      payload = { message: 'boom' };
+    } else if (url.pathname === '/repos/acme/app/code-scanning/alerts') {
+      payload =
+        url.searchParams.get('state') === 'open' && url.searchParams.get('page') === '1'
+          ? [
+              {
+                rule: { id: 'security-review/aaaaaaaaaaaaaaaa', description: 'A', security_severity_level: 'high', tags: ['security'] },
+                most_recent_instance: { location: { path: 'a.php', start_line: 3 }, message: { text: 'm' } },
+              },
+            ]
+          : [];
+    } else if (request.method === 'GET' && url.pathname.endsWith('/issues')) {
       payload = url.searchParams.get('page') === '1' ? issues : [];
     } else if (request.method === 'GET' && url.pathname.endsWith('/comments')) {
       payload = comments[url.pathname.split('/').at(-2)] ?? [];
     }
-    response.writeHead(200, { 'content-type': 'application/json' });
+    response.writeHead(status, { 'content-type': 'application/json' });
     response.end(JSON.stringify(payload));
   });
 });
@@ -166,6 +186,25 @@ for _ in $(seq 50); do
 done
 [[ -s "$temp/api.log.port" ]] || fail 'stub API did not start'
 api="http://127.0.0.1:$(cat "$temp/api.log.port")"
+
+SINK=code-scanning GITHUB_API_URL="$api" GITHUB_REPOSITORY=acme/app GITHUB_TOKEN=token node "$report" known > "$temp/out"
+expect_line "$temp/out" 'Tracked findings: 1 (1 open).'
+[[ "$(jq -c '.[0] | [.fingerprint, .state, .severity, .file, .line]' "$WORK/known.json")" == '["aaaaaaaaaaaaaaaa","open","high","a.php",3]' ]] \
+  || fail "code scanning alert is not parsed: $(jq -c '.[0]' "$WORK/known.json")"
+
+SINK=code-scanning GITHUB_API_URL="$api" GITHUB_REPOSITORY=acme/fresh GITHUB_TOKEN=token node "$report" known > "$temp/out" \
+  || fail 'a repository with no code scanning analysis yet failed'
+expect_line "$temp/out" 'Tracked findings: 0 (0 open).'
+
+if SINK=code-scanning GITHUB_API_URL="$api" GITHUB_REPOSITORY=acme/disabled GITHUB_TOKEN=token node "$report" known > "$temp/out"; then
+  fail 'disabled code scanning was treated as no findings'
+fi
+expect_line "$temp/out" '::error::Code scanning is not enabled for acme/disabled, so findings have nowhere private to go. Enable code scanning, or pass sink: issues on a private repository.'
+
+if SINK=code-scanning GITHUB_API_URL="$api" GITHUB_REPOSITORY=acme/broken GITHUB_TOKEN=token node "$report" known > "$temp/out"; then
+  fail 'a server error was treated as no findings'
+fi
+expect_line "$temp/out" '::error::GET /repos/acme/broken/code-scanning/alerts?tool_name=ureview%20security%20review&state=open&per_page=100&page=1 returned 500'
 
 SINK=issues GITHUB_API_URL="$api" GITHUB_REPOSITORY=acme/app GITHUB_TOKEN=token node "$report" known > "$temp/out"
 expect_line "$temp/out" 'Tracked findings: 2 (2 open).'

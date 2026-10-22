@@ -91,7 +91,10 @@ async function github(method, path, body) {
     },
   );
   if (!response.ok) {
-    throw new Error(`${method} ${path} returned ${response.status}`);
+    throw Object.assign(
+      new Error(`${method} ${path} returned ${response.status}`),
+      { status: response.status },
+    );
   }
   return response.status === 204 ? null : response.json();
 }
@@ -111,12 +114,29 @@ async function paginate(path) {
   }
 }
 
+async function alertsIn(state) {
+  try {
+    return await paginate(
+      `/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?tool_name=${encodeURIComponent(TOOL)}&state=${state}`,
+    );
+  } catch (error) {
+    switch (error.status) {
+      case 404:
+        return [];
+      case 403:
+        throw new Error(
+          `Code scanning is not enabled for ${GITHUB_REPOSITORY}, so findings have nowhere private to go. Enable code scanning, or pass sink: issues on a private repository.`,
+        );
+      default:
+        throw error;
+    }
+  }
+}
+
 async function knownFromCodeScanning() {
   const known = [];
   for (const state of ['open', 'dismissed']) {
-    const alerts = await paginate(
-      `/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?tool_name=${encodeURIComponent(TOOL)}&state=${state}`,
-    );
+    const alerts = await alertsIn(state);
     for (const alert of alerts) {
       const location = alert.most_recent_instance?.location ?? {};
       known.push({

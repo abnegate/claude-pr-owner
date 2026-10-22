@@ -371,7 +371,6 @@ jobs:
       learner: ${{ vars.CLAUDE_LEARNER }}
   review:
     needs: owner
-    if: needs.owner.outputs.enrolled == 'true'
     permissions:
       actions: read
       contents: read
@@ -407,7 +406,6 @@ jobs:
       learner: ${{ vars.CLAUDE_LEARNER }}
   review:
     needs: owner
-    if: needs.owner.outputs.enrolled == 'true'
     permissions:
       actions: read
       contents: read
@@ -426,6 +424,8 @@ jobs:
 ```
 
 GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says, and a deep review of a large area can run longer, so give deep mode a self-hosted, non-preemptible runner. Self-hosted jobs run up to 5 days, which is the deep default. Artifacts between jobs are kept 7 days so a run that queues for a day still finds them.
+
+The `review` job has no `enrolled` condition on purpose. A skipped job leaves the run successful, and the next incremental range starts from the newest successful run, so commits merged while nobody was enrolled would never be reviewed. Without the condition, an unenrolled run fails in its plan job and the range stays put.
 
 The shared `concurrency` group keeps the two from running at once. The caller also needs `.github/security-review.md`: what the system is and which defects matter most in it. Every reviewer reads it.
 
