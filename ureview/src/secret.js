@@ -1,8 +1,9 @@
 import sodium from 'libsodium-wrappers';
 import { ValidationError } from './ValidationError.js';
 
-const KEYS = ['oauth', 'push'];
+const KEYS = ['oauth', 'apiKey', 'push'];
 const MAXIMUM_BYTES = 48 * 1024;
+const API_KEY_PREFIX = 'sk-ant-api';
 
 export async function encrypt(publicKey, value) {
   await sodium.ready;
@@ -40,10 +41,15 @@ export function validateTokens(body, { required = true } = {}) {
     if (Buffer.byteLength(value, 'utf8') > MAXIMUM_BYTES) {
       throw new ValidationError(`${key} must be at most 48 KiB.`);
     }
+    if (key === 'apiKey' && !value.startsWith(API_KEY_PREFIX)) {
+      throw new ValidationError(
+        `apiKey must be an Anthropic API key starting with ${API_KEY_PREFIX}.`,
+      );
+    }
     tokens[key] = value;
   }
   if (required && Object.keys(tokens).length === 0) {
-    throw new ValidationError('Provide oauth or push.');
+    throw new ValidationError('Provide oauth, apiKey or push.');
   }
   return tokens;
 }

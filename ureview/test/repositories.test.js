@@ -132,6 +132,7 @@ function writeRoutes({
     },
     [`PUT ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 201 },
     [`PUT ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: { status: 204 },
+    [`PUT ${base}/secrets/UREVIEW_API_KEY_${key}`]: { status: 201 },
     [`DELETE ${base}/variables/UREVIEW_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: { status: 204 },
@@ -811,6 +812,26 @@ describe('PUT /api/repositories/:owner/:repository/tokens', () => {
     assert.equal(decrypt(writes[0].body.encrypted_value), 'github_pat_only');
   });
 
+  test('writes the Anthropic API key to its user-named secret', async () => {
+    const { send, calls } = client(writeRoutes());
+    const response = await send(
+      'PUT',
+      '/api/repositories/abnegate/edge/tokens',
+      { apiKey: ' sk-ant-api03-secret\n' },
+    );
+
+    assert.equal(response.status, 204);
+    const writes = calls.filter((call) => call.method === 'PUT');
+    assert.deepEqual(keys(writes), [
+      'PUT /repos/abnegate/edge/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
+    ]);
+    assert.equal(bearer(writes[0]), 'Bearer ghs_write');
+    assert.equal(
+      decrypt(writes[0].body.encrypted_value),
+      'sk-ant-api03-secret',
+    );
+  });
+
   test('stores the trimmed token', async () => {
     const { send, calls } = client(writeRoutes());
     const response = await send(
@@ -847,7 +868,9 @@ describe('PUT /api/repositories/:owner/:repository/tokens', () => {
   const rejected = [
     ['a secret name', { name: 'UREVIEW_OAUTH_TOKEN_SOMEONE', oauth: 'token' }],
     ['a secret name as the key', { UREVIEW_OAUTH_TOKEN_SOMEONE: 'token' }],
-    ['an api key', { oauth: 'token', apiKey: 'sk-ant-api03-key' }],
+    ['an OAuth token as the API key', { apiKey: 'sk-ant-oat01-token' }],
+    ['a push token as the API key', { apiKey: 'github_pat_token' }],
+    ['a misspelled API key field', { api_key: 'sk-ant-api03-key' }],
     ['an empty body', {}],
     ['only blank values', { oauth: '   ', push: '' }],
     ['a token with whitespace inside', { oauth: 'two words' }],
@@ -882,6 +905,7 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
   const base = '/repos/abnegate/edge/actions';
   const oauth = 'sk-ant-oat01-enrol';
   const push = 'github_pat_enrol';
+  const apiKey = 'sk-ant-api03-enrol';
 
   function enrolment(options = {}, overrides = {}) {
     const { type, ...fake } = options;
@@ -1215,6 +1239,52 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     });
   });
 
+  test('enrols with only an Anthropic API key', async () => {
+    const { send, calls, state } = enrolment();
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { apiKey },
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.data, {
+      config: { review: true },
+      secrets: { oauth: false, push: false, apiKey: true },
+    });
+    const put = calls.find(
+      (call) => call.key === `PUT ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`,
+    );
+    assert.equal(bearer(put), 'Bearer ghs_write');
+    assert.equal(decrypt(put.body.encrypted_value), apiKey);
+    assert.deepEqual([...state.secrets], ['apiKey']);
+    assert.equal(state.variable, '{"review":true}');
+  });
+
+  test('rolls back a new API key when the config write fails', async () => {
+    const { send, calls, state } = enrolment(
+      {},
+      { [`POST ${base}/variables`]: { status: 502, data: {} } },
+    );
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { apiKey, push },
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(response.data, {
+      error: 'github',
+      rolledBack: ['apiKey', 'push'],
+    });
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.key === `DELETE ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`,
+      ),
+    );
+    assert.equal(state.secrets.size, 0);
+    assert.equal(state.variable, null);
+  });
+
   test('refuses to enrol without a Claude token and writes nothing', async () => {
     for (const tokens of [{}, { push }]) {
       const { send, calls } = enrolment();
@@ -1226,7 +1296,7 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
       assert.equal(response.status, 400);
       assert.deepEqual(response.data, {
         error: 'invalid',
-        message: 'Provide a Claude token to enrol.',
+        message: 'Provide a Claude token or an Anthropic API key to enrol.',
       });
       assert.deepEqual(mutations(calls), []);
     }
@@ -1300,7 +1370,10 @@ describe('PUT /api/repositories/:owner/:repository/enrolment', () => {
     ['a missing config', { tokens: { oauth } }],
     ['an invalid config', { config: { review: 'yes' }, tokens: { oauth } }],
     ['missing tokens', { config: {} }],
-    ['an API key token', { config: {}, tokens: { apiKey: 'sk-ant-api' } }],
+    [
+      'an OAuth token as the API key',
+      { config: {}, tokens: { apiKey: 'sk-ant-oat01-enrol' } },
+    ],
     ['a token with whitespace', { config: {}, tokens: { oauth: 'a b' } }],
   ];
 

@@ -453,6 +453,7 @@ describe('request gates', () => {
 describe('error mapping', () => {
   const tokens = {
     oauth: 'sk-ant-oat01-oauth-marker',
+    apiKey: 'sk-ant-api03-api-key-marker',
     push: 'github_pat_push_marker',
   };
 
@@ -513,6 +514,7 @@ describe('error mapping', () => {
     assertNothingLeaked(context, [
       user.token,
       tokens.oauth,
+      tokens.apiKey,
       tokens.push,
       bodyText,
     ]);
@@ -553,7 +555,7 @@ describe('error mapping', () => {
     assertFailure(response, 502, 'github');
     assert.deepEqual(JSON.parse(response.body), {
       error: 'github',
-      rolledBack: ['oauth'],
+      rolledBack: ['oauth', 'apiKey'],
       rollbackFailed: ['push'],
       tokensWritten: ['push'],
     });
@@ -564,6 +566,7 @@ describe('error mapping', () => {
       user.token,
       'ghs_write_marker',
       tokens.oauth,
+      tokens.apiKey,
       tokens.push,
       bodyText,
       'DELETE',

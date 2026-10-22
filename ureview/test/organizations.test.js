@@ -144,6 +144,7 @@ function routes({ key = 'ABNEGATE' } = {}) {
     [`POST ${base}/variables`]: { status: 201 },
     [`PUT ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 201 },
     [`PUT ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: { status: 204 },
+    [`PUT ${base}/secrets/UREVIEW_API_KEY_${key}`]: { status: 201 },
     [`DELETE ${base}/variables/UREVIEW_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_API_KEY_${key}`]: { status: 204 },
@@ -725,7 +726,30 @@ describe('PUT /api/organizations/:organization/tokens', () => {
     assertUserTokenOnly(calls);
   });
 
-  test('never touches a hand-set API key shared with every repository', async () => {
+  test('rewrites an API key shared with every repository as selected when it is pasted again', async () => {
+    const { send, calls } = client({
+      ...routes(),
+      [`GET ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_API_KEY_ABNEGATE', visibility: 'all' },
+      },
+    });
+    const response = await send('PUT', path, {
+      apiKey: 'sk-ant-api03-org',
+      repositories: [42],
+    });
+
+    assert.equal(response.status, 204);
+    const put = calls.find(
+      (call) => call.key === `PUT ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`,
+    );
+    assert.equal(put.body.key_id, 'org-key-1');
+    assert.equal(put.body.visibility, 'selected');
+    assert.deepEqual(put.body.selected_repository_ids, [42]);
+    assert.equal(decrypt(put.body.encrypted_value), 'sk-ant-api03-org');
+    assertUserTokenOnly(calls);
+  });
+
+  test('never touches an API key it was not given that is shared with every repository', async () => {
     const { send, calls } = client({
       ...routes(),
       [`GET ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
@@ -815,6 +839,7 @@ describe('PUT /api/organizations/:organization/tokens', () => {
     ['a secret name as the key', { UREVIEW_PUSH_TOKEN_SOMEONE: 'token' }],
     ['an empty body', {}],
     ['a token with whitespace inside', { push: 'github pat' }],
+    ['an OAuth token as the API key', { apiKey: 'sk-ant-oat01-org' }],
   ];
 
   for (const [label, invalid] of rejected) {
@@ -916,6 +941,7 @@ describe('PUT /api/organizations/:organization/enrolment', () => {
   const base = '/orgs/appwrite-labs/actions';
   const oauth = 'sk-ant-oat01-org';
   const push = 'github_pat_org';
+  const apiKey = 'sk-ant-api03-org';
 
   function enrolment({ key, login, ...fake } = {}, overrides = {}) {
     const store = actions(base, { key, publicKey: organizationKey, ...fake });
@@ -1029,7 +1055,52 @@ describe('PUT /api/organizations/:organization/enrolment', () => {
     }
   });
 
-  test('reports a hand-set API key shared with every repository as exposed without touching it', async () => {
+  test('enrols with only an API key visible to the submitted repositories, so it is not exposed', async () => {
+    const { send, calls, state } = enrolment({ secrets: ['apiKey'] });
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { apiKey },
+      repositories: [7],
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.data, {
+      config: { review: true },
+      secrets: { oauth: false, push: false, apiKey: true },
+      repositories: [7],
+      exposed: [],
+    });
+    const put = calls.find(
+      (call) => call.key === `PUT ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`,
+    );
+    assert.equal(put.body.visibility, 'selected');
+    assert.deepEqual(put.body.selected_repository_ids, [7]);
+    assert.equal(decrypt(put.body.encrypted_value), apiKey);
+    assert.equal(state.visibility.apiKey, 'selected');
+    assert.deepEqual(state.repositories.apiKey, [7]);
+    assertUserTokenOnly(calls);
+  });
+
+  test('rolls back a new API key when the config write fails', async () => {
+    const { send, state } = enrolment(
+      {},
+      { [`POST ${base}/variables`]: { status: 500, data: {} } },
+    );
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { apiKey },
+      repositories: [7],
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(response.data, {
+      error: 'github',
+      rolledBack: ['apiKey'],
+    });
+    assert.deepEqual([...state.secrets], []);
+  });
+
+  test('reports an API key it was not given that is shared with every repository as exposed without touching it', async () => {
     const { send, calls, state } = enrolment({ secrets: ['apiKey'] });
     const response = await send('PUT', path, {
       config: { review: true },
@@ -1194,7 +1265,10 @@ describe('PUT /api/organizations/:organization/enrolment', () => {
     });
 
     assert.equal(response.status, 400);
-    assert.equal(response.data.message, 'Provide a Claude token to enrol.');
+    assert.equal(
+      response.data.message,
+      'Provide a Claude token or an Anthropic API key to enrol.',
+    );
     assert.deepEqual(mutations(calls), []);
   });
 });

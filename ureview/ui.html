@@ -1587,8 +1587,8 @@
             <p class="notice" id="signed-out-notice" role="status" hidden></p>
             <p class="hero-lede">
               Choose which tasks Claude runs on the pull requests you open, and
-              store the Claude token they run with, per repository or for the
-              organization repositories you choose.
+              store the Claude token or API key they run with, per repository or
+              for the organization repositories you choose.
             </p>
             <div class="hero-actions">
               <a class="button primary large" href="/auth/login">
@@ -1852,10 +1852,7 @@
       </form>
       <form class="section" data-part="tokens" novalidate>
         <div class="section-head">
-          <div class="field-head">
-            <h3 class="label">Tokens</h3>
-            <span class="chip" data-part="api-key-chip" hidden></span>
-          </div>
+          <h3 class="label">Tokens</h3>
           <p class="hint">
             Saved as encrypted GitHub Actions secrets. They cannot be read back,
             only replaced.
@@ -1863,10 +1860,9 @@
         </div>
         <div class="notes">
           <p class="card-note danger" data-part="exposure-note" hidden></p>
-          <p class="card-note danger" data-part="api-key-note" hidden></p>
           <p class="card-note warning" data-part="token-note" hidden>
-            No Claude token is set here. Without one, the workflow fails
-            whenever one of your tasks applies.
+            No Claude token or Anthropic API key is set here. Without one, the
+            workflow fails whenever one of your tasks applies.
           </p>
         </div>
         <div class="token-grid">
@@ -1892,6 +1888,32 @@
             <p class="hint" data-id="oauth-hint">
               Run <code>claude setup-token</code> in a terminal, then paste the
               token.
+            </p>
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label class="label" data-for="apiKey"
+                >Anthropic API key<span class="optional">optional</span></label
+              >
+              <span
+                class="chip"
+                data-part="api-key-chip"
+                data-id="api-key-chip"
+              ></span>
+            </div>
+            <input
+              class="input"
+              type="password"
+              name="apiKey"
+              placeholder="sk-ant-api…"
+              autocomplete="new-password"
+              autocapitalize="off"
+              spellcheck="false"
+              data-describe="api-key-chip api-key-hint"
+            />
+            <p class="hint" data-id="api-key-hint">
+              From console.anthropic.com. Billed per request; used when no
+              Claude token is set.
             </p>
           </div>
           <div class="field">
@@ -2057,11 +2079,12 @@
       const TOAST_DURATION = 3200;
       const SECOND = 1000;
 
-      const TOKEN_KINDS = ['oauth', 'push'];
-      const SECRET_KINDS = [...TOKEN_KINDS, 'apiKey'];
+      const TOKEN_KINDS = ['oauth', 'apiKey', 'push'];
+      const CLAUDE_KINDS = ['oauth', 'apiKey'];
       const TOKEN_NAMES = Object.freeze({
         oauth: 'Claude token',
-        push: 'push token',
+        apiKey: 'Anthropic API key',
+        push: 'push PAT',
       });
 
       const TOKEN_STATES = Object.freeze({
@@ -2069,14 +2092,6 @@
         inherited: { text: 'Set in organization', className: 'chip inherited' },
         missing: { text: 'Not set', className: 'chip' },
         unknown: { text: 'Unknown', className: 'chip unknown' },
-      });
-
-      const API_KEY_STATES = Object.freeze({
-        set: { text: 'API key set', className: 'chip set' },
-        inherited: {
-          text: 'API key set in organization',
-          className: 'chip inherited',
-        },
       });
 
       const SIGNIN_NOTICES = new Map([
@@ -2398,7 +2413,7 @@
 
       function exposedKinds(value) {
         return Array.isArray(value)
-          ? SECRET_KINDS.filter((kind) => value.includes(kind))
+          ? TOKEN_KINDS.filter((kind) => value.includes(kind))
           : null;
       }
 
@@ -2521,13 +2536,6 @@
         const [verb, pronoun] =
           tokens.length === 1 ? ['is', 'it'] : ['are', 'them'];
         return `Your ${names} ${verb} visible to every repository in ${target.label}, so anyone who can push a workflow to any repository there can read ${pronoun}. Choose repositories above, paste ${pronoun} again, and save to restrict ${pronoun}.`;
-      }
-
-      function apiKeyExposure(target, kinds) {
-        if (!kinds.includes('apiKey')) {
-          return '';
-        }
-        return `Your API key secret UREVIEW_API_KEY_${loginKey(state.user.login)} was set outside ureview and is visible to every repository in ${target.label}. ureview cannot rewrite it. Delete it in the organization settings, or re-create it with access for selected repositories only.`;
       }
 
       function choiceOf(config, name) {
@@ -2686,6 +2694,7 @@
           group(`${scope} variable`, [`UREVIEW_${key}`]),
           group(`${scope} secrets`, [
             `UREVIEW_OAUTH_TOKEN_${key}`,
+            `UREVIEW_API_KEY_${key}`,
             `UREVIEW_PUSH_TOKEN_${key}`,
           ]),
         );
@@ -2729,10 +2738,11 @@
           note: part(fragment, 'note'),
           tokenNote: part(fragment, 'token-note'),
           exposureNote: part(fragment, 'exposure-note'),
-          apiKeyNote: part(fragment, 'api-key-note'),
-          oauthChip: part(fragment, 'oauth-chip'),
-          pushChip: part(fragment, 'push-chip'),
-          apiKeyChip: part(fragment, 'api-key-chip'),
+          chips: {
+            oauth: part(fragment, 'oauth-chip'),
+            apiKey: part(fragment, 'api-key-chip'),
+            push: part(fragment, 'push-chip'),
+          },
           settingsStatus: part(fragment, 'settings-status'),
           tokensStatus: part(fragment, 'tokens-status'),
           removeStatus: part(fragment, 'remove-status'),
@@ -2757,8 +2767,12 @@
           event.preventDefault();
           saveSettings(target);
         });
-        view.tokens.addEventListener('input', (event) => {
-          event.target.removeAttribute('aria-invalid');
+        view.tokens.addEventListener('input', () => {
+          for (const kind of TOKEN_KINDS) {
+            view.tokens.elements
+              .namedItem(kind)
+              .removeAttribute('aria-invalid');
+          }
         });
         view.tokens.addEventListener('submit', (event) => {
           event.preventDefault();
@@ -2971,7 +2985,7 @@
           return `Using your ${target.owner} organization settings. Saving here creates repository settings that replace them.`;
         }
         if (target.config === null) {
-          return 'Claude does not run on your pull requests here yet. Add a Claude token above, choose tasks, then enrol.';
+          return 'Claude does not run on your pull requests here yet. Add a Claude token or an Anthropic API key above, choose tasks, then enrol.';
         }
         return '';
       }
@@ -3005,9 +3019,12 @@
       function renderSummary(target) {
         const view = target.view;
         const config = effectiveConfig(target);
-        const oauth = tokenState(target, 'oauth');
-        const push = tokenState(target, 'push');
-        const missingToken = config !== null && oauth === 'missing';
+        const states = Object.fromEntries(
+          TOKEN_KINDS.map((kind) => [kind, tokenState(target, kind)]),
+        );
+        const missingToken =
+          config !== null &&
+          CLAUDE_KINDS.every((kind) => states[kind] === 'missing');
         const exposed = exposure(target);
 
         renderBadge(target);
@@ -3025,35 +3042,21 @@
               ]),
         );
 
-        for (const [chip, key] of [
-          [view.oauthChip, oauth],
-          [view.pushChip, push],
-        ]) {
-          chip.className = TOKEN_STATES[key].className;
-          chip.textContent = TOKEN_STATES[key].text;
-        }
-        const apiKey = API_KEY_STATES[tokenState(target, 'apiKey')];
-        view.apiKeyChip.hidden = apiKey === undefined;
-        if (apiKey !== undefined) {
-          view.apiKeyChip.className = apiKey.className;
-          view.apiKeyChip.textContent = apiKey.text;
+        for (const kind of TOKEN_KINDS) {
+          view.chips[kind].className = TOKEN_STATES[states[kind]].className;
+          view.chips[kind].textContent = TOKEN_STATES[states[kind]].text;
         }
 
         const note = noteFor(target);
         view.note.hidden = note === '';
         view.note.textContent = note;
         view.tokenNote.hidden = !missingToken;
-        for (const [node, text] of [
-          [view.exposureNote, tokenExposure(target, exposed)],
-          [view.apiKeyNote, apiKeyExposure(target, exposed)],
-        ]) {
-          node.hidden = text === '';
-          node.textContent = text;
-        }
+        const exposureText = tokenExposure(target, exposed);
+        view.exposureNote.hidden = exposureText === '';
+        view.exposureNote.textContent = exposureText;
         view.remove.hidden =
           target.config === null &&
-          target.secrets.oauth === false &&
-          target.secrets.push === false;
+          TOKEN_KINDS.every((kind) => target.secrets[kind] === false);
         renderSubmit(target);
       }
 
@@ -3127,13 +3130,16 @@
       function requireToken(target, tokens) {
         if (
           target.config !== null ||
-          tokens.oauth !== undefined ||
-          tokenState(target, 'oauth') !== 'missing'
+          CLAUDE_KINDS.some(
+            (kind) =>
+              tokens[kind] !== undefined ||
+              tokenState(target, kind) !== 'missing',
+          )
         ) {
           return;
         }
         throw new FieldError(
-          'Paste a Claude token above first. Claude cannot run here without one.',
+          'Paste a Claude token or an Anthropic API key above first. Claude cannot run here without one.',
           target.view.tokens.elements.namedItem('oauth'),
         );
       }
@@ -3163,20 +3169,23 @@
       }
 
       function savedTokensMessage(tokens) {
-        if (tokens.oauth !== undefined && tokens.push !== undefined) {
-          return 'Claude token and push PAT saved.';
-        }
-        return tokens.oauth !== undefined
-          ? 'Claude token saved.'
-          : 'Push PAT saved.';
+        const names = listNames(
+          TOKEN_KINDS.filter((kind) => tokens[kind] !== undefined).map(
+            (kind) => TOKEN_NAMES[kind],
+          ),
+        );
+        return `${names.charAt(0).toUpperCase()}${names.slice(1)} saved.`;
       }
 
       function applyTokens(target, tokens) {
         target.view.tokens.reset();
         target.secrets = {
           ...target.secrets,
-          oauth: tokens.oauth !== undefined || target.secrets.oauth,
-          push: tokens.push !== undefined || target.secrets.push,
+          ...Object.fromEntries(
+            TOKEN_KINDS.filter((kind) => tokens[kind] !== undefined).map(
+              (kind) => [kind, true],
+            ),
+          ),
         };
         renderSummary(target);
       }
@@ -3349,7 +3358,7 @@
         if (Object.keys(tokens).length === 0) {
           reportFieldError(
             new FieldError(
-              'Paste a Claude token or a push PAT first.',
+              'Paste a Claude token, an Anthropic API key or a push PAT first.',
               view.tokens.elements.namedItem('oauth'),
             ),
             view.tokensStatus,
@@ -3383,7 +3392,7 @@
 
       function removalQuestion(target) {
         if (target.kind === 'organization') {
-          return `Unenrol from the ${target.label} organization? This deletes your ureview settings and tokens for this organization, including any API key secret. Repository settings stay in place.`;
+          return `Unenrol from the ${target.label} organization? This deletes your ureview settings and tokens for this organization. Repository settings stay in place.`;
         }
         const fallback =
           target.inherited.config !== null
