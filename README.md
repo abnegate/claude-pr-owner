@@ -195,6 +195,9 @@ Claude runs only on PRs whose author enrolled, with that author's own token and 
 | `UREVIEW_OAUTH_TOKEN_<LOGIN>` | secret | Output of `claude setup-token` |
 | `UREVIEW_API_KEY_<LOGIN>` | secret | Anthropic API key, the alternative to the OAuth token |
 | `UREVIEW_PUSH_TOKEN_<LOGIN>` | secret | PAT with `contents: write` for Claude's pushes (optional) |
+| `UREVIEW_OPENAI_API_KEY_<LOGIN>` | secret | OpenAI API key for GPT reviewers in the [security review](#security-review) (optional) |
+| `UREVIEW_DEEP_API_KEY_<LOGIN>` | secret | Anthropic API key billed only for the deep security review (optional) |
+| `UREVIEW_DEEP_OPENAI_API_KEY_<LOGIN>` | secret | OpenAI API key billed only for the deep security review (optional) |
 
 Each name can live at repository or organization level. A repository value overrides an organization value of the same name, as GitHub resolves it. Variable names match case-insensitively.
 
@@ -272,6 +275,9 @@ Pin both `uses:` to the same commit. `with:` takes the other inputs too, as the 
 | `oauth_secret` | `UREVIEW_OAUTH_TOKEN_<LOGIN>` when enrolled |
 | `api_key_secret` | `UREVIEW_API_KEY_<LOGIN>` when enrolled |
 | `push_secret` | `UREVIEW_PUSH_TOKEN_<LOGIN>` when enrolled |
+| `openai_secret` | `UREVIEW_OPENAI_API_KEY_<LOGIN>` when enrolled |
+| `deep_api_key_secret` | `UREVIEW_DEEP_API_KEY_<LOGIN>` when enrolled |
+| `deep_openai_secret` | `UREVIEW_DEEP_OPENAI_API_KEY_<LOGIN>` when enrolled |
 
 `owner.yml` adds one small `ubuntu-latest` job per subscribed event, enrolled or not. The `claude` job is skipped when the owner is not enrolled.
 
@@ -306,6 +312,9 @@ Admins can do the same with `gh`:
 gh variable set UREVIEW_<LOGIN> [--org O --visibility all | -R o/r] --body '{"review":true,"improvement":false}'
 gh secret set UREVIEW_OAUTH_TOKEN_<LOGIN> [--org O --visibility all | -R o/r]
 gh secret set UREVIEW_PUSH_TOKEN_<LOGIN> [--org O --visibility all | -R o/r]
+gh secret set UREVIEW_OPENAI_API_KEY_<LOGIN> [--org O --visibility all | -R o/r]
+gh secret set UREVIEW_DEEP_API_KEY_<LOGIN> [--org O --visibility all | -R o/r]
+gh secret set UREVIEW_DEEP_OPENAI_API_KEY_<LOGIN> [--org O --visibility all | -R o/r]
 ```
 
 `gh secret set` without `--body` prompts for the value, which keeps it out of shell history.
@@ -318,6 +327,122 @@ ureview does not log in to Claude for you. `claude setup-token` is the sanctione
 - Organization secrets with `visibility: all` reach every repository in the organization, and everyone who can push to any of them.
 - Where teammates do not trust each other with their tokens, prefer repository-level secrets, or `--visibility selected --repos …`.
 - Whether organization secrets and variables reach private repositories depends on the organization's GitHub plan. Set them per repository where they do not.
+
+## Security review
+
+`security-review.yml` is a secure code review that several models run independently, so one model catches what another misses. A triage model then confirms every finding against the code and merges duplicates.
+
+It has two modes:
+
+- **deep** reviews every area of the codebase in full. Run it once, by hand, with its own API keys and no spend cap.
+- **incremental** reviews the commits merged since the last successful run of either mode, nightly. It hands the reviewers every tracked finding so they look for siblings instead of repeats, and rechecks open findings for fixes.
+
+Tracked findings live where they are published, never in the repository:
+
+| Repository | Sink | Deduplication | Fixed findings |
+|---|---|---|---|
+| Private | Issues labelled `security-review` | Fingerprint of CWE, file, and symbol in the issue body | One comment asking a human to confirm and close |
+| Public | Code scanning alerts, visible only to maintainers | The same fingerprint as the rule id | Dropped from the next upload, so GitHub closes the alert |
+
+Public repositories' logs and artifacts are public, so no model output reaches a log: reviewers write to files, logs show counts and cost, and everything passed between jobs is encrypted with a key derived from a repository secret and the run id.
+
+### Callers
+
+Nightly, `.github/workflows/security-review.yml`:
+
+```yaml
+name: Security Review
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: security-review
+  cancel-in-progress: false
+
+jobs:
+  owner:
+    permissions:
+      pull-requests: read
+    uses: abnegate/claude-pr-owner/.github/workflows/owner.yml@<sha>
+    with:
+      learner: ${{ vars.CLAUDE_LEARNER }}
+  review:
+    needs: owner
+    if: needs.owner.outputs.enrolled == 'true'
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      security-events: write
+    uses: abnegate/claude-pr-owner/.github/workflows/security-review.yml@<sha>
+    secrets:
+      oauth_token: ${{ secrets[needs.owner.outputs.oauth_secret] }}
+      api_key: ${{ secrets[needs.owner.outputs.api_key_secret] }}
+      openai_api_key: ${{ secrets[needs.owner.outputs.openai_secret] }}
+    with:
+      history: security-review.yml,security-review-deep.yml
+```
+
+Deep, `.github/workflows/security-review-deep.yml`:
+
+```yaml
+name: Security Review (Deep)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: security-review
+  cancel-in-progress: false
+
+jobs:
+  owner:
+    permissions:
+      pull-requests: read
+    uses: abnegate/claude-pr-owner/.github/workflows/owner.yml@<sha>
+    with:
+      learner: ${{ vars.CLAUDE_LEARNER }}
+  review:
+    needs: owner
+    if: needs.owner.outputs.enrolled == 'true'
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      security-events: write
+    uses: abnegate/claude-pr-owner/.github/workflows/security-review.yml@<sha>
+    secrets:
+      api_key: ${{ secrets[needs.owner.outputs.deep_api_key_secret] }}
+      openai_api_key: ${{ secrets[needs.owner.outputs.deep_openai_secret] }}
+    with:
+      mode: deep
+      areas: |
+        auth: src/Auth app/controllers/api/account.php
+        storage: src/Storage app/controllers/api/storage.php
+```
+
+The shared `concurrency` group keeps the two from running at once. The caller also needs `.github/security-review.md`: what the system is and which defects matter most in it. Every reviewer reads it.
+
+### Inputs
+
+| Input | Default | Effect |
+|---|---|---|
+| `mode` | `incremental` | `incremental` or `deep` |
+| `since` | | Incremental only. Review commits after this git date instead of since the last successful run |
+| `history` | The caller | Incremental only. Workflow files whose last successful run starts the range |
+| `project` | `.github/security-review.md` | The project description every reviewer reads |
+| `areas` | The whole repository | Deep only. One area per line as `name: path path ...`. Every reviewer reviews every area in its own job, so no job approaches the 6-hour limit |
+| `reviewers` | `claude-opus-5-5,gpt-6.1-sol`, or `claude-fable-5-1,gpt-6.1-sol` for deep | `claude-*` runs on Claude Code, `gpt-*`, `o*`, and `codex-*` on Codex. A reviewer whose provider has no credentials is skipped with a warning |
+| `triage_model` | `claude-fable-5-1` | Confirms, merges, and deduplicates findings, and rechecks open ones |
+| `effort` | `xhigh`, or `max` for deep | Effort for every model |
+| `budget_usd` | `40`, or no cap for deep | Spend cap for each Claude session |
+| `sink` | `issues` if private, else `code-scanning` | Where confirmed findings go |
+| `claude_code_version`, `codex_version` | Pinned | CLI versions |
+
+A reviewer failure fails the run, after triage and publishing finish for the rest, so the next incremental run reviews the same range again.
 
 ## Hosting ureview
 
