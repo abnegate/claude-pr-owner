@@ -66,9 +66,9 @@ on:
         default: ''
       runner:
         description: >-
-          runs-on label for the review and triage jobs. {id} becomes a unique id per job,
-          for runners such as gcrunner that need one. GitHub-hosted runners stop every job
-          at 6 hours, so give a deep review of a large area a self-hosted runner.
+          runs-on label for every job. {0} becomes an id unique to the run and job, for
+          self-hosted runners such as gcrunner that need one. GitHub-hosted runners stop
+          every job at 6 hours and bill private repositories by the minute.
         type: string
         default: ubuntu-24.04
       timeout_minutes:
@@ -103,7 +103,7 @@ permissions: {}
 
 jobs:
   plan:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ format(inputs.runner, format('{0}-{1}-security-review-plan', github.run_id, github.run_attempt)) }}
     permissions:
       actions: read
       contents: read
@@ -351,18 +351,8 @@ jobs:
           printf '%s\n' "$areas" > "$work/areas.txt"
           node ureview/security-review/report.js areas "$work/areas.txt"
 
-          runner_for() {
-            printf '%s' "${RUNNER//\{id\}/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-security-review-$1}"
-          }
-          reviews='[]'
-          while read -r review; do
-            label=$(runner_for "$(jq -r '"review-\(.area)-\(.slot)"' <<< "$review")")
-            reviews=$(jq -c --argjson review "$review" --arg runner "$label" '. + [$review + {runner: $runner}]' <<< "$reviews")
-          done < <(jq -c --argjson reviewers "$selected" '.[] as $area | $reviewers | to_entries[] | {area: $area.index, name: $area.name, slot: .key, model: .value.model, provider: .value.provider}' "$work/areas.json")
-          triages='[]'
-          while read -r area; do
-            triages=$(jq -c --argjson area "$area" --arg runner "$(runner_for "triage-$area")" '. + [{area: $area, runner: $runner}]' <<< "$triages")
-          done < <(jq -r '.[].index' "$work/areas.json")
+          reviews=$(jq -c --argjson reviewers "$selected" '[.[] as $area | $reviewers | to_entries[] | {area: $area.index, name: $area.name, slot: .key, model: .value.model, provider: .value.provider}]' "$work/areas.json")
+          triages=$(jq -c '[.[] | {area: .index}]' "$work/areas.json")
           {
             echo "reviews=$reviews"
             echo "areas=$triages"
@@ -402,7 +392,7 @@ jobs:
     name: Review ${{ matrix.name }} with ${{ matrix.model }}
     needs: plan
     if: needs.plan.outputs.changed == 'true'
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ format(inputs.runner, format('{0}-{1}-security-review-review-{2}-{3}', github.run_id, github.run_attempt, matrix.area, matrix.slot)) }}
     timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
     permissions:
       contents: read
@@ -545,7 +535,7 @@ jobs:
     name: Triage area ${{ matrix.area }}
     needs: [plan, review]
     if: always() && needs.plan.result == 'success' && needs.plan.outputs.changed == 'true'
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ format(inputs.runner, format('{0}-{1}-security-review-triage-{2}', github.run_id, github.run_attempt, matrix.area)) }}
     timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
     permissions:
       contents: read
@@ -705,7 +695,7 @@ jobs:
     name: Publish
     needs: [plan, triage]
     if: always() && needs.plan.result == 'success' && needs.plan.outputs.changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ format(inputs.runner, format('{0}-{1}-security-review-publish', github.run_id, github.run_attempt)) }}
     permissions:
       actions: read
       contents: read
