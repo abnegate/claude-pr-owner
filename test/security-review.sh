@@ -280,6 +280,11 @@ if "{1}-security-review-triage-{2}', github.run_id, github.run_attempt, matrix.a
 inputs = yaml.safe_load(Path(".github/workflows/security-review.yml").read_text())[True]["workflow_call"]["inputs"]
 if inputs["runner"].get("default") != "ubuntu-24.04":
     raise SystemExit("FAIL: runner does not default to GitHub-hosted runners")
+for name, job in jobs.items():
+    if job.get("environment") != "${{ inputs.environment }}":
+        raise SystemExit(f"FAIL: job {name} does not run in inputs.environment, so its secrets are not branch-protected")
+if inputs["environment"].get("default") != "security-review":
+    raise SystemExit("FAIL: environment does not default to security-review")
 PY
 
 repository="$temp/plan/repository"
