@@ -51,6 +51,19 @@ on:
           Spend cap for each Claude session. Empty uses 40 for incremental and no cap for deep.
         type: string
         default: ''
+      runner:
+        description: >-
+          runs-on label for the review and triage jobs. {id} becomes a unique id per job,
+          for runners such as gcrunner that need one. GitHub-hosted runners stop every job
+          at 6 hours, so give a deep review of a large area a self-hosted runner.
+        type: string
+        default: ubuntu-24.04
+      timeout_minutes:
+        description: >-
+          Timeout for each review and triage job. Empty uses 360 for incremental and
+          7200, the self-hosted maximum, for deep.
+        type: string
+        default: ''
       sink:
         description: >-
           Where confirmed findings go: issues or code-scanning. Empty uses issues for
@@ -87,6 +100,7 @@ jobs:
       sink: ${{ steps.plan.outputs.sink }}
       effort: ${{ steps.plan.outputs.effort }}
       budget: ${{ steps.plan.outputs.budget }}
+      timeout: ${{ steps.plan.outputs.timeout }}
       reviews: ${{ steps.plan.outputs.reviews }}
       areas: ${{ steps.plan.outputs.areas }}
       triage_provider: ${{ steps.plan.outputs.triage_provider }}
@@ -121,6 +135,8 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           BUDGET: ${{ inputs.budget_usd }}
           SINK_INPUT: ${{ inputs.sink }}
+          RUNNER: ${{ inputs.runner }}
+          TIMEOUT: ${{ inputs.timeout_minutes }}
           HAS_ANTHROPIC: ${{ secrets.oauth_token != '' || secrets.api_key != '' }}
           HAS_OPENAI: ${{ secrets.openai_api_key != '' }}
         run: |
@@ -155,11 +171,13 @@ jobs:
               reviewers=${REVIEWERS:-claude-opus-5-5,gpt-6.1-sol}
               effort=${EFFORT:-xhigh}
               budget=${BUDGET:-40}
+              timeout=${TIMEOUT:-360}
               ;;
             deep)
               reviewers=${REVIEWERS:-claude-fable-5-1,gpt-6.1-sol}
               effort=${EFFORT:-max}
               budget=${BUDGET:-}
+              timeout=${TIMEOUT:-7200}
               ;;
             *)
               fail "mode must be incremental or deep, not '$MODE'."
@@ -170,6 +188,8 @@ jobs:
             *) fail "effort must be low, medium, high, xhigh, or max, not '$effort'." ;;
           esac
           [[ -z "$budget" || "$budget" =~ ^[0-9]+(\.[0-9]+)?$ ]] || fail "budget_usd must be a number, not '$budget'."
+          [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || fail "timeout_minutes must be a whole number of minutes, not '$timeout'."
+          [[ -n "$RUNNER" ]] || fail 'runner must not be empty.'
 
           selected='[]'
           IFS=',' read -ra models <<< "$reviewers"
@@ -209,6 +229,7 @@ jobs:
             echo "sink=$sink"
             echo "effort=$effort"
             echo "budget=$budget"
+            echo "timeout=$timeout"
             echo "triage_provider=$triage_provider"
           } >> "$GITHUB_OUTPUT"
 
@@ -272,10 +293,21 @@ jobs:
           printf '%s\n' "$areas" > "$work/areas.txt"
           node ureview/security-review/report.js areas "$work/areas.txt"
 
-          reviews=$(jq -c --argjson reviewers "$selected" '[.[] as $area | $reviewers | to_entries[] | {area: $area.index, name: $area.name, slot: .key, model: .value.model, provider: .value.provider}]' "$work/areas.json")
+          runner_for() {
+            printf '%s' "${RUNNER//\{id\}/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-security-review-$1}"
+          }
+          reviews='[]'
+          while read -r review; do
+            label=$(runner_for "$(jq -r '"review-\(.area)-\(.slot)"' <<< "$review")")
+            reviews=$(jq -c --argjson review "$review" --arg runner "$label" '. + [$review + {runner: $runner}]' <<< "$reviews")
+          done < <(jq -c --argjson reviewers "$selected" '.[] as $area | $reviewers | to_entries[] | {area: $area.index, name: $area.name, slot: .key, model: .value.model, provider: .value.provider}' "$work/areas.json")
+          triages='[]'
+          while read -r area; do
+            triages=$(jq -c --argjson area "$area" --arg runner "$(runner_for "triage-$area")" '. + [{area: $area, runner: $runner}]' <<< "$triages")
+          done < <(jq -r '.[].index' "$work/areas.json")
           {
             echo "reviews=$reviews"
-            echo "areas=$(jq -c '[.[].index]' "$work/areas.json")"
+            echo "areas=$triages"
             echo "changed=true"
           } >> "$GITHUB_OUTPUT"
           echo "Planned $(jq length <<< "$reviews") reviews across $(jq length "$work/areas.json") areas."
@@ -292,19 +324,19 @@ jobs:
         with:
           name: security-review-context
           path: ${{ runner.temp }}/context.enc
-          retention-days: 1
+          retention-days: 7
 
   review:
     name: Review ${{ matrix.name }} with ${{ matrix.model }}
     needs: plan
     if: needs.plan.outputs.changed == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 32
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.reviews) }}
     env:
@@ -420,21 +452,21 @@ jobs:
         with:
           name: security-review-review-${{ matrix.area }}-${{ matrix.slot }}
           path: ${{ runner.temp }}/review.enc
-          retention-days: 1
+          retention-days: 7
 
   triage:
     name: Triage area ${{ matrix.area }}
     needs: [plan, review]
     if: always() && needs.plan.result == 'success' && needs.plan.outputs.changed == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 32
       matrix:
-        area: ${{ fromJSON(needs.plan.outputs.areas) }}
+        include: ${{ fromJSON(needs.plan.outputs.areas) }}
     env:
       EFFORT: ${{ needs.plan.outputs.effort }}
       BUDGET: ${{ needs.plan.outputs.budget }}
@@ -565,7 +597,7 @@ jobs:
         with:
           name: security-review-triage-${{ matrix.area }}
           path: ${{ runner.temp }}/triage.enc
-          retention-days: 1
+          retention-days: 7
 
   publish:
     name: Publish

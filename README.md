@@ -419,10 +419,13 @@ jobs:
       openai_api_key: ${{ secrets[needs.owner.outputs.deep_openai_secret] }}
     with:
       mode: deep
+      runner: gcrunner={id}/runner=standard/spot=false
       areas: |
         auth: src/Auth app/controllers/api/account.php
         storage: src/Storage app/controllers/api/storage.php
 ```
+
+GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says, and a deep review of a large area can run longer, so give deep mode a self-hosted, non-preemptible runner. Self-hosted jobs run up to 5 days, which is the deep default. Artifacts between jobs are kept 7 days so a run that queues for a day still finds them.
 
 The shared `concurrency` group keeps the two from running at once. The caller also needs `.github/security-review.md`: what the system is and which defects matter most in it. Every reviewer reads it.
 
@@ -434,11 +437,13 @@ The shared `concurrency` group keeps the two from running at once. The caller al
 | `since` | | Incremental only. Review commits after this git date instead of since the last successful run |
 | `history` | The caller | Incremental only. Workflow files whose last successful run starts the range |
 | `project` | `.github/security-review.md` | The project description every reviewer reads |
-| `areas` | The whole repository | Deep only. One area per line as `name: path path ...`. Every reviewer reviews every area in its own job, so no job approaches the 6-hour limit |
+| `areas` | The whole repository | Deep only. One area per line as `name: path path ...`. Every reviewer reviews every area in its own job, all in parallel |
 | `reviewers` | `claude-opus-5-5,gpt-6.1-sol`, or `claude-fable-5-1,gpt-6.1-sol` for deep | `claude-*` runs on Claude Code, `gpt-*`, `o*`, and `codex-*` on Codex. A reviewer whose provider has no credentials is skipped with a warning |
 | `triage_model` | `claude-fable-5-1` | Confirms, merges, and deduplicates findings, and rechecks open ones |
 | `effort` | `xhigh`, or `max` for deep | Effort for every model |
 | `budget_usd` | `40`, or no cap for deep | Spend cap for each Claude session |
+| `runner` | `ubuntu-24.04` | `runs-on` for review and triage jobs. `{id}` becomes a unique id per job, as gcrunner-style runners need |
+| `timeout_minutes` | `360`, or `7200` for deep | Timeout for each review and triage job |
 | `sink` | `issues` if private, else `code-scanning` | Where confirmed findings go |
 | `claude_code_version`, `codex_version` | Pinned | CLI versions |
 

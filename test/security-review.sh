@@ -255,6 +255,7 @@ run_plan() {
     export MODE="${MODE:-incremental}" SINCE="${SINCE:-}" HISTORY="${HISTORY:-}" PROJECT=.github/security-review.md
     export AREAS="${AREAS:-}" REVIEWERS="${REVIEWERS:-}" TRIAGE_MODEL="${TRIAGE_MODEL:-claude-fable-5-1}"
     export EFFORT="${EFFORT:-}" BUDGET="${BUDGET:-}" SINK_INPUT="${SINK_INPUT:-}"
+    export RUNNER="${RUNNER-ubuntu-24.04}" TIMEOUT="${TIMEOUT:-}" GITHUB_RUN_ID=77 GITHUB_RUN_ATTEMPT=1
     export HAS_ANTHROPIC="${HAS_ANTHROPIC:-true}" HAS_OPENAI="${HAS_OPENAI:-true}"
     rm -rf "$RUNNER_TEMP"
     bash -e /tmp/security-review-plan.sh > "$temp/plan.stdout" 2>&1
@@ -267,9 +268,10 @@ expect_output "$temp/plan.out" head "$second"
 expect_output "$temp/plan.out" sink code-scanning
 expect_output "$temp/plan.out" effort xhigh
 expect_output "$temp/plan.out" budget 40
+expect_output "$temp/plan.out" timeout 360
 expect_output "$temp/plan.out" triage_provider anthropic
-expect_output "$temp/plan.out" reviews '[{"area":0,"name":"repository","slot":0,"model":"claude-opus-5-5","provider":"anthropic"},{"area":0,"name":"repository","slot":1,"model":"gpt-6.1-sol","provider":"openai"}]'
-expect_output "$temp/plan.out" areas '[0]'
+expect_output "$temp/plan.out" reviews '[{"area":0,"name":"repository","slot":0,"model":"claude-opus-5-5","provider":"anthropic","runner":"ubuntu-24.04"},{"area":0,"name":"repository","slot":1,"model":"gpt-6.1-sol","provider":"openai","runner":"ubuntu-24.04"}]'
+expect_output "$temp/plan.out" areas '[{"area":0,"runner":"ubuntu-24.04"}]'
 grep -q "Changes: \`git diff $first $second\`" "$temp/plan/runner/security-review/scope.md" || fail 'the range does not start at the last successful run'
 grep -q -- '--workflow security-review.yml' "$temp/gh.log" || fail 'history does not default to the calling workflow'
 grep -q 'No project description was provided.' "$temp/plan/runner/security-review/project.md" || fail 'a missing project file is not tolerated'
@@ -282,13 +284,18 @@ expect_output "$temp/plan.out" changed false
 
 GH_PRIVATE=true HAS_OPENAI=false run_plan || fail 'plan failed without OpenAI credentials'
 expect_output "$temp/plan.out" sink issues
-expect_output "$temp/plan.out" reviews '[{"area":0,"name":"repository","slot":0,"model":"claude-opus-5-5","provider":"anthropic"}]'
+expect_output "$temp/plan.out" reviews '[{"area":0,"name":"repository","slot":0,"model":"claude-opus-5-5","provider":"anthropic","runner":"ubuntu-24.04"}]'
 grep -qF '::warning::No openai credentials are set, so gpt-6.1-sol does not review this run.' "$temp/plan.stdout" || fail 'a skipped reviewer is not warned about'
 
-MODE=deep AREAS=$'auth: src/auth\nstorage: src/storage' run_plan || fail "deep plan failed: $(cat "$temp/plan.stdout")"
+MODE=deep AREAS=$'auth: src/auth\nstorage: src/storage' RUNNER='gcrunner={id}/runner=standard/spot=false' run_plan \
+  || fail "deep plan failed: $(cat "$temp/plan.stdout")"
 expect_output "$temp/plan.out" effort max
 expect_output "$temp/plan.out" budget ''
-expect_output "$temp/plan.out" areas '[0,1]'
+expect_output "$temp/plan.out" timeout 7200
+expect_output "$temp/plan.out" areas '[{"area":0,"runner":"gcrunner=77-1-security-review-triage-0/runner=standard/spot=false"},{"area":1,"runner":"gcrunner=77-1-security-review-triage-1/runner=standard/spot=false"}]'
+[[ "$(grep -E '^reviews=' "$temp/plan.out" | cut -d= -f2- | jq -r '[.[].runner] | unique | length')" == 4 ]] || fail 'review runners are not unique per job'
+[[ "$(grep -E '^reviews=' "$temp/plan.out" | cut -d= -f2- | jq -r '.[3].runner')" == 'gcrunner=77-1-security-review-review-1-1/runner=standard/spot=false' ]] \
+  || fail 'the runner id does not name the review'
 [[ "$(grep -E '^reviews=' "$temp/plan.out" | cut -d= -f2- | jq -c '[.[] | [.area, .model]]')" == '[[0,"claude-fable-5-1"],[0,"gpt-6.1-sol"],[1,"claude-fable-5-1"],[1,"gpt-6.1-sol"]]' ]] \
   || fail 'deep mode does not review every area with every reviewer'
 grep -q -- 'run list' "$temp/gh.log" && fail 'deep mode looked up a range'
@@ -303,5 +310,9 @@ MODE=quick run_plan && fail 'an unknown mode was accepted'
 EFFORT=extreme run_plan && fail 'an unknown effort was accepted'
 BUDGET=lots run_plan && fail 'a non-numeric budget was accepted'
 SINK_INPUT=slack run_plan && fail 'an unknown sink was accepted'
+TIMEOUT=forever run_plan && fail 'a non-numeric timeout was accepted'
+RUNNER='' run_plan && fail 'an empty runner was accepted'
+TIMEOUT=600 run_plan || fail 'an explicit timeout was rejected'
+expect_output "$temp/plan.out" timeout 600
 
 echo 'security review tests passed'
