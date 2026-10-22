@@ -318,6 +318,9 @@ expect_not_enrolled_owner() {
   expect_owner oauth_secret ''
   expect_owner api_key_secret ''
   expect_owner push_secret ''
+  expect_owner openai_secret ''
+  expect_owner deep_api_key_secret ''
+  expect_owner deep_openai_secret ''
 }
 
 vars_for() {
@@ -1082,6 +1085,12 @@ for event in pull_request pull_request_review pull_request_review_comment; do
   expect_owner oauth_secret UREVIEW_OAUTH_TOKEN_ABNEGATE
   expect_owner api_key_secret UREVIEW_API_KEY_ABNEGATE
   expect_owner push_secret UREVIEW_PUSH_TOKEN_ABNEGATE
+expect_owner openai_secret UREVIEW_OPENAI_API_KEY_ABNEGATE
+expect_owner deep_api_key_secret UREVIEW_DEEP_API_KEY_ABNEGATE
+expect_owner deep_openai_secret UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE
+  expect_owner openai_secret UREVIEW_OPENAI_API_KEY_ABNEGATE
+  expect_owner deep_api_key_secret UREVIEW_DEEP_API_KEY_ABNEGATE
+  expect_owner deep_openai_secret UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE
   expect_line /tmp/cpo-owner.out '@abnegate is enrolled in ureview.'
   expect_no_gh_calls
 done
@@ -1098,6 +1107,12 @@ for event in issue_comment issues; do
   expect_owner oauth_secret UREVIEW_OAUTH_TOKEN_ABNEGATE
   expect_owner api_key_secret UREVIEW_API_KEY_ABNEGATE
   expect_owner push_secret UREVIEW_PUSH_TOKEN_ABNEGATE
+expect_owner openai_secret UREVIEW_OPENAI_API_KEY_ABNEGATE
+expect_owner deep_api_key_secret UREVIEW_DEEP_API_KEY_ABNEGATE
+expect_owner deep_openai_secret UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE
+  expect_owner openai_secret UREVIEW_OPENAI_API_KEY_ABNEGATE
+  expect_owner deep_api_key_secret UREVIEW_DEEP_API_KEY_ABNEGATE
+  expect_owner deep_openai_secret UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE
   expect_no_gh_calls
 done
 
@@ -1105,8 +1120,8 @@ reset_event
 PR_AUTHOR=abnegate
 VARS_JSON=$(vars_for UREVIEW_ABNEGATE '{}')
 run_owner
-[[ "$(cut -d= -f1 <<<"$OWNER_OUT" | paste -sd, -)" == 'login,enrolled,oauth_secret,api_key_secret,push_secret' ]] \
-  || fail "owner.yml outputs are not login, enrolled, oauth_secret, api_key_secret, push_secret in order: $OWNER_OUT"
+[[ "$(cut -d= -f1 <<<"$OWNER_OUT" | paste -sd, -)" == 'login,enrolled,oauth_secret,api_key_secret,push_secret,openai_secret,deep_api_key_secret,deep_openai_secret' ]] \
+  || fail "owner.yml outputs are not login, enrolled, oauth_secret, api_key_secret, push_secret, openai_secret, deep_api_key_secret, deep_openai_secret in order: $OWNER_OUT"
 
 reset_event
 PR_AUTHOR=some-user
@@ -1117,6 +1132,9 @@ expect_owner enrolled true
 expect_owner oauth_secret UREVIEW_OAUTH_TOKEN_SOME_USER
 expect_owner api_key_secret UREVIEW_API_KEY_SOME_USER
 expect_owner push_secret UREVIEW_PUSH_TOKEN_SOME_USER
+expect_owner openai_secret UREVIEW_OPENAI_API_KEY_SOME_USER
+expect_owner deep_api_key_secret UREVIEW_DEEP_API_KEY_SOME_USER
+expect_owner deep_openai_secret UREVIEW_DEEP_OPENAI_API_KEY_SOME_USER
 
 reset_event
 PR_AUTHOR=AbNegate
@@ -1299,6 +1317,12 @@ for event in schedule workflow_dispatch; do
   expect_owner oauth_secret UREVIEW_OAUTH_TOKEN_SOME_USER
   expect_owner api_key_secret UREVIEW_API_KEY_SOME_USER
   expect_owner push_secret UREVIEW_PUSH_TOKEN_SOME_USER
+expect_owner openai_secret UREVIEW_OPENAI_API_KEY_SOME_USER
+expect_owner deep_api_key_secret UREVIEW_DEEP_API_KEY_SOME_USER
+expect_owner deep_openai_secret UREVIEW_DEEP_OPENAI_API_KEY_SOME_USER
+  expect_owner openai_secret UREVIEW_OPENAI_API_KEY_SOME_USER
+  expect_owner deep_api_key_secret UREVIEW_DEEP_API_KEY_SOME_USER
+  expect_owner deep_openai_secret UREVIEW_DEEP_OPENAI_API_KEY_SOME_USER
   expect_no_gh_calls
 
   for learner in '' 'bad login!' 'dependabot[bot]'; do
@@ -1950,7 +1974,7 @@ owner_workflow = yaml.safe_load(Path(".github/workflows/owner.yml").read_text())
 call = owner_workflow[True]["workflow_call"]
 check("secrets" not in call, "owner.yml declares workflow_call secrets")
 outputs = call.get("outputs") or {}
-output_names = ["login", "enrolled", "oauth_secret", "api_key_secret", "push_secret"]
+output_names = ["login", "enrolled", "oauth_secret", "api_key_secret", "push_secret", "openai_secret", "deep_api_key_secret", "deep_openai_secret"]
 check(list(outputs) == output_names, f"owner.yml outputs are {list(outputs)}, want {output_names}")
 resolve = owner_workflow["jobs"]["resolve"]
 check(resolve.get("permissions") == {"pull-requests": "read"},

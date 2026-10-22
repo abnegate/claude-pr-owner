@@ -1,8 +1,36 @@
 import sodium from 'libsodium-wrappers';
 import { ValidationError } from './ValidationError.js';
 
-const KEYS = ['oauth', 'push'];
+export const TOKENS = Object.freeze([
+  'oauth',
+  'push',
+  'openai',
+  'deepApiKey',
+  'deepOpenai',
+]);
+
 const MAXIMUM_BYTES = 48 * 1024;
+const ANTHROPIC_PREFIX = 'sk-ant-';
+const ANTHROPIC_API_KEY_PREFIX = 'sk-ant-api';
+const OPENAI_PREFIX = 'sk-';
+
+const Format = Object.freeze({
+  ANTHROPIC_API_KEY: Object.freeze({
+    description: `an Anthropic API key starting with ${ANTHROPIC_API_KEY_PREFIX}`,
+    matches: (value) => value.startsWith(ANTHROPIC_API_KEY_PREFIX),
+  }),
+  OPENAI_API_KEY: Object.freeze({
+    description: `an OpenAI API key starting with ${OPENAI_PREFIX}`,
+    matches: (value) =>
+      value.startsWith(OPENAI_PREFIX) && !value.startsWith(ANTHROPIC_PREFIX),
+  }),
+});
+
+const FORMATS = Object.freeze({
+  openai: Format.OPENAI_API_KEY,
+  deepApiKey: Format.ANTHROPIC_API_KEY,
+  deepOpenai: Format.OPENAI_API_KEY,
+});
 
 export async function encrypt(publicKey, value) {
   await sodium.ready;
@@ -18,12 +46,12 @@ export function validateTokens(body, { required = true } = {}) {
     throw new ValidationError('Tokens must be a JSON object.');
   }
   for (const key of Object.keys(body)) {
-    if (!KEYS.includes(key)) {
+    if (!TOKENS.includes(key)) {
       throw new ValidationError(`Unknown token: ${key}.`);
     }
   }
   const tokens = {};
-  for (const key of KEYS) {
+  for (const key of TOKENS) {
     if (body[key] === undefined) {
       continue;
     }
@@ -39,6 +67,10 @@ export function validateTokens(body, { required = true } = {}) {
     }
     if (Buffer.byteLength(value, 'utf8') > MAXIMUM_BYTES) {
       throw new ValidationError(`${key} must be at most 48 KiB.`);
+    }
+    const format = FORMATS[key];
+    if (format !== undefined && !format.matches(value)) {
+      throw new ValidationError(`${key} must be ${format.description}.`);
     }
     tokens[key] = value;
   }

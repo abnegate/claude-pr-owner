@@ -80,6 +80,70 @@ describe('validateTokens', () => {
     });
   });
 
+  it('accepts the OpenAI and deep review keys on their own', () => {
+    assert.deepEqual(
+      validateTokens({
+        openai: 'sk-proj-nightly',
+        deepApiKey: 'sk-ant-api03-deep',
+        deepOpenai: 'sk-deep',
+      }),
+      {
+        openai: 'sk-proj-nightly',
+        deepApiKey: 'sk-ant-api03-deep',
+        deepOpenai: 'sk-deep',
+      },
+    );
+  });
+
+  it('trims the OpenAI and deep review keys', () => {
+    assert.deepEqual(
+      validateTokens({
+        openai: ' sk-proj-nightly\n',
+        deepApiKey: '\tsk-ant-api03-deep ',
+      }),
+      { openai: 'sk-proj-nightly', deepApiKey: 'sk-ant-api03-deep' },
+    );
+  });
+
+  for (const [key, value] of [
+    ['openai', 'proj-nightly'],
+    ['openai', 'sk-ant-api03-key'],
+    ['openai', 'sk-ant-oat01-token'],
+    ['openai', 'SK-proj-nightly'],
+    ['deepOpenai', 'github_pat_token'],
+    ['deepOpenai', 'sk-ant-api03-key'],
+    ['deepApiKey', 'sk-ant-oat01-token'],
+    ['deepApiKey', 'sk-proj-nightly'],
+    ['deepApiKey', 'api03-key'],
+  ]) {
+    it(`rejects ${JSON.stringify(value)} as ${key}`, () => {
+      assert.throws(() => validateTokens({ [key]: value }), ValidationError);
+    });
+  }
+
+  it('names the expected format when a key is malformed', () => {
+    assert.throws(() => validateTokens({ openai: 'proj-nightly' }), {
+      name: 'ValidationError',
+      message: 'openai must be an OpenAI API key starting with sk-.',
+    });
+    assert.throws(() => validateTokens({ deepApiKey: 'sk-proj-nightly' }), {
+      name: 'ValidationError',
+      message:
+        'deepApiKey must be an Anthropic API key starting with sk-ant-api.',
+    });
+  });
+
+  it('drops empty OpenAI and deep review keys without checking their format', () => {
+    assert.deepEqual(
+      validateTokens({
+        oauth: 'sk-ant-oat01-token',
+        openai: '',
+        deepApiKey: ' ',
+      }),
+      { oauth: 'sk-ant-oat01-token' },
+    );
+  });
+
   it('accepts both tokens', () => {
     assert.deepEqual(
       validateTokens({ oauth: 'sk-ant-oat01-token', push: 'ghp_token' }),

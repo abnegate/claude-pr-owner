@@ -5,7 +5,7 @@ import { installations, request } from './github.js';
 import { names } from './names.js';
 import { empty, json } from './response.js';
 import { validateTokens } from './secret.js';
-import { Store } from './Store.js';
+import { ABSENT, Store } from './Store.js';
 
 const DENIED = new Set([403, 404]);
 const INTEGRATION = 'Resource not accessible by integration';
@@ -137,7 +137,7 @@ async function describe(fetch, token, login, identifiers) {
       admin: false,
       reason: reason(status, data),
       config: null,
-      secrets: { oauth: false, push: false, apiKey: false },
+      secrets: ABSENT,
     };
   }
   const { config, secrets } = await Store.organization({

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import sodium from 'libsodium-wrappers';
 import { createApp } from '../src/app.js';
-import { actions, mutations } from './support/actions.js';
+import { ABSENT, actions, mutations } from './support/actions.js';
 import { mockFetch, NOT_FOUND } from './support/fetch.js';
 import { environment, pages, sessionCookie, url } from './support/fixtures.js';
 
@@ -14,7 +14,6 @@ const organizationKey = sodium.to_base64(
   keyPair.publicKey,
   sodium.base64_variants.ORIGINAL,
 );
-const ABSENT = { oauth: false, push: false, apiKey: false };
 
 function client(routes, { login = 'abnegate' } = {}) {
   const { fetch, calls } = mockFetch(routes);
@@ -113,6 +112,9 @@ function routes({ key = 'ABNEGATE', repositorySelection = 'all' } = {}) {
     },
     [`GET ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: NOT_FOUND,
     [`GET ${base}/secrets/UREVIEW_API_KEY_${key}`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_OPENAI_API_KEY_${key}`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_DEEP_API_KEY_${key}`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_${key}`]: NOT_FOUND,
     [`PATCH ${base}/variables/UREVIEW_${key}`]: { status: 204 },
     [`POST ${base}/variables`]: { status: 201 },
     [`PUT ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 201 },
@@ -121,6 +123,9 @@ function routes({ key = 'ABNEGATE', repositorySelection = 'all' } = {}) {
     [`DELETE ${base}/secrets/UREVIEW_OAUTH_TOKEN_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_API_KEY_${key}`]: { status: 204 },
     [`DELETE ${base}/secrets/UREVIEW_PUSH_TOKEN_${key}`]: NOT_FOUND,
+    [`DELETE ${base}/secrets/UREVIEW_OPENAI_API_KEY_${key}`]: NOT_FOUND,
+    [`DELETE ${base}/secrets/UREVIEW_DEEP_API_KEY_${key}`]: NOT_FOUND,
+    [`DELETE ${base}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_${key}`]: NOT_FOUND,
   };
 }
 
@@ -128,7 +133,7 @@ const admin = {
   login: 'appwrite-labs',
   admin: true,
   config: { review: true, model: 'claude-sonnet-4-6', effort: 'low' },
-  secrets: { oauth: true, push: false, apiKey: false },
+  secrets: { ...ABSENT, oauth: true },
 };
 
 function byLogin(organizations) {
@@ -235,7 +240,10 @@ describe('GET /api/organizations', () => {
         .sort(),
       [
         'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
+        'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE',
+        'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE',
         'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
+        'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE',
         'GET /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
         'GET /orgs/appwrite-labs/actions/secrets/public-key',
         'GET /orgs/appwrite-labs/actions/variables/UREVIEW_ABNEGATE',
@@ -289,7 +297,7 @@ describe('GET /api/organizations/:organization', () => {
       login: 'appwrite-labs',
       admin: true,
       config: null,
-      secrets: { oauth: false, push: false, apiKey: true },
+      secrets: { ...ABSENT, apiKey: true },
     };
 
     assert.equal(single.status, 200);
@@ -685,7 +693,7 @@ describe('PUT /api/organizations/:organization/enrolment', () => {
     assert.equal(response.status, 200);
     assert.deepEqual(response.data, {
       config: { review: true },
-      secrets: { oauth: true, push: true, apiKey: false },
+      secrets: { ...ABSENT, oauth: true, push: true },
     });
     assert.equal(keys(calls)[0], 'GET /user/installations');
     for (const call of mutations(calls)) {
@@ -844,10 +852,67 @@ describe('PUT /api/organizations/:organization/enrolment', () => {
     assert.equal(response.data.message, 'Provide a Claude token to enrol.');
     assert.deepEqual(mutations(calls), []);
   });
+
+  test('refuses to enrol with only OpenAI or deep review keys', async () => {
+    const { send, calls } = enrolment({ secrets: ['openai'] });
+    const response = await send('PUT', path, {
+      config: {},
+      tokens: {
+        deepApiKey: 'sk-ant-api03-org',
+        deepOpenai: 'sk-proj-org',
+      },
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal(response.data.message, 'Provide a Claude token to enrol.');
+    assert.deepEqual(mutations(calls), []);
+  });
+
+  test('stores the OpenAI and deep review keys with visibility all', async () => {
+    const tokens = {
+      openai: 'sk-proj-org',
+      deepApiKey: 'sk-ant-api03-org',
+      deepOpenai: 'sk-proj-deep-org',
+    };
+    const { send, calls, state } = enrolment();
+    const response = await send('PUT', path, {
+      config: { review: true },
+      tokens: { oauth, ...tokens },
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.data.secrets, {
+      ...ABSENT,
+      oauth: true,
+      openai: true,
+      deepApiKey: true,
+      deepOpenai: true,
+    });
+    const writes = mutations(calls).filter((call) => call.method === 'PUT');
+    for (const call of writes) {
+      assert.equal(call.body.visibility, 'all', call.key);
+    }
+    assert.deepEqual(
+      Object.fromEntries(
+        writes.map((call) => [
+          call.key.split('/').pop(),
+          decrypt(call.body.encrypted_value),
+        ]),
+      ),
+      {
+        UREVIEW_OAUTH_TOKEN_ABNEGATE: oauth,
+        UREVIEW_OPENAI_API_KEY_ABNEGATE: tokens.openai,
+        UREVIEW_DEEP_API_KEY_ABNEGATE: tokens.deepApiKey,
+        UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE: tokens.deepOpenai,
+      },
+    );
+    assert.equal(state.variable, '{"review":true}');
+    assertUserTokenOnly(calls);
+  });
 });
 
 describe('DELETE /api/organizations/:organization', () => {
-  test('removes the variable and all three secrets with the user token', async () => {
+  test('removes the variable and every secret with the user token', async () => {
     const { send, calls } = client(routes());
     const response = await send('DELETE', '/api/organizations/appwrite-labs');
 
@@ -855,7 +920,10 @@ describe('DELETE /api/organizations/:organization', () => {
     const deletes = calls.filter((call) => call.method === 'DELETE');
     assert.deepEqual(keys(deletes).sort(), [
       'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_API_KEY_ABNEGATE',
+      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE',
+      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE',
       'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE',
+      'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE',
       'DELETE /orgs/appwrite-labs/actions/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE',
       'DELETE /orgs/appwrite-labs/actions/variables/UREVIEW_ABNEGATE',
     ]);

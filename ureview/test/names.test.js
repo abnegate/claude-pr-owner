@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ValidationError } from '../src/ValidationError.js';
-import { loginKey, names } from '../src/names.js';
+import { loginKey, names, SECRETS } from '../src/names.js';
 
 describe('loginKey', () => {
   it('upper-cases the login and turns hyphens into underscores', () => {
@@ -38,6 +38,9 @@ describe('names', () => {
       oauth: 'UREVIEW_OAUTH_TOKEN_ABNEGATE',
       apiKey: 'UREVIEW_API_KEY_ABNEGATE',
       push: 'UREVIEW_PUSH_TOKEN_ABNEGATE',
+      openai: 'UREVIEW_OPENAI_API_KEY_ABNEGATE',
+      deepApiKey: 'UREVIEW_DEEP_API_KEY_ABNEGATE',
+      deepOpenai: 'UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE',
     });
   });
 
@@ -47,7 +50,20 @@ describe('names', () => {
       oauth: 'UREVIEW_OAUTH_TOKEN_SOME_USER',
       apiKey: 'UREVIEW_API_KEY_SOME_USER',
       push: 'UREVIEW_PUSH_TOKEN_SOME_USER',
+      openai: 'UREVIEW_OPENAI_API_KEY_SOME_USER',
+      deepApiKey: 'UREVIEW_DEEP_API_KEY_SOME_USER',
+      deepOpenai: 'UREVIEW_DEEP_OPENAI_API_KEY_SOME_USER',
     });
+  });
+
+  it('names a secret for every secret kind', () => {
+    const derived = names('abnegate');
+    assert.deepEqual(
+      [...SECRETS].sort(),
+      Object.keys(derived)
+        .filter((kind) => kind !== 'variable')
+        .sort(),
+    );
   });
 
   it('returns a frozen object', () => {

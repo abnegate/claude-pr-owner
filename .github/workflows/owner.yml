@@ -26,6 +26,15 @@ on:
       push_secret:
         description: Name of the owner's push token secret.
         value: ${{ jobs.resolve.outputs.push_secret }}
+      openai_secret:
+        description: Name of the owner's OpenAI API key secret.
+        value: ${{ jobs.resolve.outputs.openai_secret }}
+      deep_api_key_secret:
+        description: Name of the owner's Anthropic API key secret for deep security reviews.
+        value: ${{ jobs.resolve.outputs.deep_api_key_secret }}
+      deep_openai_secret:
+        description: Name of the owner's OpenAI API key secret for deep security reviews.
+        value: ${{ jobs.resolve.outputs.deep_openai_secret }}
 
 jobs:
   resolve:
@@ -38,6 +47,9 @@ jobs:
       oauth_secret: ${{ steps.owner.outputs.oauth_secret }}
       api_key_secret: ${{ steps.owner.outputs.api_key_secret }}
       push_secret: ${{ steps.owner.outputs.push_secret }}
+      openai_secret: ${{ steps.owner.outputs.openai_secret }}
+      deep_api_key_secret: ${{ steps.owner.outputs.deep_api_key_secret }}
+      deep_openai_secret: ${{ steps.owner.outputs.deep_openai_secret }}
     steps:
       - name: Resolve owner
         id: owner
@@ -66,6 +78,9 @@ jobs:
           oauth_secret=''
           api_key_secret=''
           push_secret=''
+          openai_secret=''
+          deep_api_key_secret=''
+          deep_openai_secret=''
 
           write_outputs() {
             {
@@ -74,6 +89,9 @@ jobs:
               echo "oauth_secret=$oauth_secret"
               echo "api_key_secret=$api_key_secret"
               echo "push_secret=$push_secret"
+              echo "openai_secret=$openai_secret"
+              echo "deep_api_key_secret=$deep_api_key_secret"
+              echo "deep_openai_secret=$deep_openai_secret"
             } >> "$GITHUB_OUTPUT"
           }
 
@@ -120,6 +138,9 @@ jobs:
             oauth_secret="UREVIEW_OAUTH_TOKEN_$key"
             api_key_secret="UREVIEW_API_KEY_$key"
             push_secret="UREVIEW_PUSH_TOKEN_$key"
+            openai_secret="UREVIEW_OPENAI_API_KEY_$key"
+            deep_api_key_secret="UREVIEW_DEEP_API_KEY_$key"
+            deep_openai_secret="UREVIEW_DEEP_OPENAI_API_KEY_$key"
             echo "@$login is enrolled in ureview."
           else
             echo "@$login is not enrolled in ureview (no UREVIEW_$key variable); skipping."

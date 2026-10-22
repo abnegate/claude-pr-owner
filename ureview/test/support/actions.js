@@ -4,7 +4,14 @@ const PREFIXES = Object.freeze({
   oauth: 'UREVIEW_OAUTH_TOKEN_',
   push: 'UREVIEW_PUSH_TOKEN_',
   apiKey: 'UREVIEW_API_KEY_',
+  openai: 'UREVIEW_OPENAI_API_KEY_',
+  deepApiKey: 'UREVIEW_DEEP_API_KEY_',
+  deepOpenai: 'UREVIEW_DEEP_OPENAI_API_KEY_',
 });
+
+export const ABSENT = Object.freeze(
+  Object.fromEntries(Object.keys(PREFIXES).map((kind) => [kind, false])),
+);
 
 export function actions(
   base,

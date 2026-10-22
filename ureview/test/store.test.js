@@ -5,6 +5,7 @@ import { GitHubAppError } from '../src/GitHubAppError.js';
 import { GitHubError } from '../src/GitHubError.js';
 import { Store, VISIBILITY } from '../src/Store.js';
 import { ValidationError } from '../src/ValidationError.js';
+import { ABSENT } from './support/actions.js';
 import { mockFetch, NOT_FOUND } from './support/fetch.js';
 
 const names = Object.freeze({
@@ -12,6 +13,9 @@ const names = Object.freeze({
   oauth: 'UREVIEW_OAUTH_TOKEN_ABNEGATE',
   apiKey: 'UREVIEW_API_KEY_ABNEGATE',
   push: 'UREVIEW_PUSH_TOKEN_ABNEGATE',
+  openai: 'UREVIEW_OPENAI_API_KEY_ABNEGATE',
+  deepApiKey: 'UREVIEW_DEEP_API_KEY_ABNEGATE',
+  deepOpenai: 'UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE',
 });
 
 const repositoryBase = '/repos/abnegate/edge/actions';
@@ -23,6 +27,9 @@ function absent(base) {
     [`GET ${base}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`]: NOT_FOUND,
     [`GET ${base}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`]: NOT_FOUND,
     [`GET ${base}/secrets/UREVIEW_API_KEY_ABNEGATE`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE`]: NOT_FOUND,
+    [`GET ${base}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE`]: NOT_FOUND,
   };
 }
 
@@ -85,15 +92,34 @@ describe('Store.status', () => {
       [`GET ${repositoryBase}/secrets/UREVIEW_API_KEY_ABNEGATE`]: {
         data: { name: 'UREVIEW_API_KEY_ABNEGATE' },
       },
+      [`GET ${repositoryBase}/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_OPENAI_API_KEY_ABNEGATE' },
+      },
+      [`GET ${repositoryBase}/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_DEEP_API_KEY_ABNEGATE' },
+      },
+      [`GET ${repositoryBase}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE' },
+      },
     });
     const status = await repository(fetch).status(names);
     assert.deepEqual(status, {
       config: { review: true, severities: 'critical,high' },
-      secrets: { oauth: true, push: true, apiKey: true },
+      secrets: {
+        oauth: true,
+        push: true,
+        apiKey: true,
+        openai: true,
+        deepApiKey: true,
+        deepOpenai: true,
+      },
     });
     assert.deepEqual(keys(calls).sort(), [
       `GET ${repositoryBase}/secrets/UREVIEW_API_KEY_ABNEGATE`,
+      `GET ${repositoryBase}/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE`,
+      `GET ${repositoryBase}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE`,
       `GET ${repositoryBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
+      `GET ${repositoryBase}/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE`,
       `GET ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`,
       `GET ${repositoryBase}/variables/UREVIEW_ABNEGATE`,
     ]);
@@ -107,7 +133,7 @@ describe('Store.status', () => {
     const status = await repository(fetch).status(names);
     assert.deepEqual(status, {
       config: null,
-      secrets: { oauth: false, push: false, apiKey: false },
+      secrets: ABSENT,
     });
   });
 
@@ -121,7 +147,7 @@ describe('Store.status', () => {
     const status = await repository(fetch).status(names);
     assert.deepEqual(status, {
       config: null,
-      secrets: { oauth: false, push: false, apiKey: true },
+      secrets: { ...ABSENT, apiKey: true },
     });
   });
 
@@ -135,7 +161,7 @@ describe('Store.status', () => {
     const status = await repository(fetch).status(names);
     assert.deepEqual(status, {
       config: null,
-      secrets: { oauth: false, push: true, apiKey: false },
+      secrets: { ...ABSENT, push: true },
     });
   });
 
@@ -163,7 +189,7 @@ describe('Store.status', () => {
     const status = await organization(fetch).status(names);
     assert.deepEqual(status, {
       config: { bots: false },
-      secrets: { oauth: true, push: false, apiKey: false },
+      secrets: { ...ABSENT, oauth: true },
     });
     assert.ok(calls.every((call) => call.key.includes(organizationBase)));
     assert.ok(
@@ -401,6 +427,43 @@ describe('Store.saveConfig', () => {
 });
 
 describe('Store.saveSecrets', () => {
+  test('seals the OpenAI and deep review keys into their own secrets', async () => {
+    const pair = await keypair();
+    const { fetch, calls } = mockFetch({
+      [`GET ${repositoryBase}/secrets/public-key`]: {
+        data: { key_id: 'key-1', key: pair.encoded },
+      },
+      [`PUT ${repositoryBase}/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE`]: {
+        status: 201,
+      },
+      [`PUT ${repositoryBase}/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE`]: {
+        status: 201,
+      },
+      [`PUT ${repositoryBase}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE`]: {
+        status: 201,
+      },
+    });
+    await repository(fetch).saveSecrets(names, {
+      openai: 'sk-proj-nightly',
+      deepApiKey: 'sk-ant-api03-deep',
+      deepOpenai: 'sk-proj-deep',
+    });
+    const puts = calls.filter((call) => call.method === 'PUT');
+    assert.deepEqual(
+      Object.fromEntries(
+        puts.map((call) => [
+          call.key.split('/').pop(),
+          decrypt(call.body.encrypted_value, pair),
+        ]),
+      ),
+      {
+        UREVIEW_OPENAI_API_KEY_ABNEGATE: 'sk-proj-nightly',
+        UREVIEW_DEEP_API_KEY_ABNEGATE: 'sk-ant-api03-deep',
+        UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE: 'sk-proj-deep',
+      },
+    );
+  });
+
   test('fetches the public key once and seals each secret', async () => {
     const pair = await keypair();
     const { fetch, calls } = mockFetch({
@@ -744,9 +807,12 @@ describe('Store.remove', () => {
     `DELETE ${repositoryBase}/secrets/UREVIEW_OAUTH_TOKEN_ABNEGATE`,
     `DELETE ${repositoryBase}/secrets/UREVIEW_API_KEY_ABNEGATE`,
     `DELETE ${repositoryBase}/secrets/UREVIEW_PUSH_TOKEN_ABNEGATE`,
+    `DELETE ${repositoryBase}/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE`,
+    `DELETE ${repositoryBase}/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE`,
+    `DELETE ${repositoryBase}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE`,
   ];
 
-  test('deletes the variable and the three secrets', async () => {
+  test('deletes the variable and every secret', async () => {
     const { fetch, calls } = mockFetch(
       Object.fromEntries(deletes.map((key) => [key, { status: 204 }])),
     );
@@ -773,7 +839,7 @@ describe('Store.remove', () => {
       ),
     );
     await organization(fetch).remove(names);
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, deletes.length);
     assert.ok(
       calls.every(
         (call) =>
@@ -795,6 +861,28 @@ describe('Store.remove', () => {
 });
 
 describe('Store.presence', () => {
+  test('reports OpenAI and deep review secrets', async () => {
+    const { fetch } = mockFetch({
+      ...absent(repositoryBase),
+      [`GET ${repositoryBase}/secrets/UREVIEW_OPENAI_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_OPENAI_API_KEY_ABNEGATE' },
+      },
+      [`GET ${repositoryBase}/secrets/UREVIEW_DEEP_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_DEEP_API_KEY_ABNEGATE' },
+      },
+      [`GET ${repositoryBase}/secrets/UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE`]: {
+        data: { name: 'UREVIEW_DEEP_OPENAI_API_KEY_ABNEGATE' },
+      },
+    });
+    assert.deepEqual(await repository(fetch).presence(names), {
+      ...ABSENT,
+      variable: false,
+      openai: true,
+      deepApiKey: true,
+      deepOpenai: true,
+    });
+  });
+
   test('reports whether the variable and each secret exist', async () => {
     const { fetch, calls } = mockFetch({
       ...absent(repositoryBase),
@@ -806,10 +894,9 @@ describe('Store.presence', () => {
       },
     });
     assert.deepEqual(await repository(fetch).presence(names), {
+      ...ABSENT,
       variable: true,
-      oauth: false,
       push: true,
-      apiKey: false,
     });
     assert.deepEqual(
       keys(calls).sort(),
@@ -915,7 +1002,7 @@ describe('Store.inherited', () => {
     const inherited = await repository(fetch).inherited(names);
     assert.deepEqual(inherited, {
       config: { review: true },
-      secrets: { oauth: false, push: true, apiKey: false },
+      secrets: { ...ABSENT, push: true },
     });
     const variablesCall = calls.find((call) => call.key === variablesKey);
     const secretsCall = calls.find((call) => call.key === secretsKey);
@@ -955,7 +1042,7 @@ describe('Store.inherited', () => {
     const inherited = await repository(fetch).inherited(names);
     assert.deepEqual(inherited, {
       config: { bots: true },
-      secrets: { oauth: true, push: false, apiKey: false },
+      secrets: { ...ABSENT, oauth: true },
     });
     assert.equal(calls.length, 4);
   });
@@ -975,7 +1062,28 @@ describe('Store.inherited', () => {
     const inherited = await repository(fetch).inherited(names);
     assert.deepEqual(inherited, {
       config: null,
-      secrets: { oauth: false, push: false, apiKey: false },
+      secrets: ABSENT,
+    });
+  });
+
+  test('reports inherited OpenAI and deep review keys', async () => {
+    const { fetch } = mockFetch({
+      [variablesKey]: { data: { variables: [] } },
+      [secretsKey]: {
+        data: {
+          secrets: [
+            { name: 'UREVIEW_OPENAI_API_KEY_ABNEGATE' },
+            { name: 'UREVIEW_DEEP_API_KEY_ABNEGATE' },
+            { name: 'ureview_deep_openai_api_key_abnegate' },
+            { name: 'UREVIEW_OPENAI_API_KEY_SOMEONE' },
+          ],
+        },
+      },
+    });
+    const inherited = await repository(fetch).inherited(names);
+    assert.deepEqual(inherited, {
+      config: null,
+      secrets: { ...ABSENT, openai: true, deepApiKey: true, deepOpenai: true },
     });
   });
 
@@ -989,7 +1097,7 @@ describe('Store.inherited', () => {
     const inherited = await repository(fetch).inherited(names);
     assert.deepEqual(inherited, {
       config: null,
-      secrets: { oauth: false, push: false, apiKey: true },
+      secrets: { ...ABSENT, apiKey: true },
     });
   });
 
