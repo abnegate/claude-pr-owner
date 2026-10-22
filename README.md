@@ -343,7 +343,7 @@ Public repositories' logs and artifacts are public, so no model output reaches a
 
 ### Callers
 
-Run the review from one private repository that only you can push to, not from the repositories it reviews. Every workflow on every branch of a repository can read the secrets visible to it, and an organization secret with visibility `all` is visible to every repository in the organization. Keeping the keys in a repository nobody else can push to means no one else can run code that reads them. Pick an owner whose base permission is `none`, such as your own account or an organization that grants members no access by default, so membership alone does not grant write.
+Run the review from one private central repository, not from the repositories it reviews, and keep the keys in its environments. Every workflow on every branch of a repository can read the repository's secrets, and an organization secret with visibility `all` is visible to every repository in the organization. An environment whose deployment branches are limited to the default branch releases its secrets only to workflow code on that branch, so with a ruleset that lets only administrators update it, people who can push other branches still cannot run code that reads the keys. Every job runs in the `environment` input, `security-review` by default.
 
 The central repository reaches each reviewed repository through a GitHub App. Create one with these repository permissions, install it on every repository to review, and keep its private key in the central repository:
 
@@ -353,16 +353,21 @@ The central repository reaches each reviewed repository through a GitHub App. Cr
 | Issues | Read and write | The `issues` sink on private repositories |
 | Code scanning alerts | Read and write | The `code-scanning` sink on public repositories |
 
-Store the secrets once, in the central repository:
+Create a `security-review` environment for the nightly runs and a `security-review-deep` one for the deep runs, each deploying only from the default branch, and store the keys in them under the names of the workflow's secrets:
 
 ```sh
-gh secret set SECURITY_REVIEW_APP_PRIVATE_KEY -R O/central < app.private-key.pem
-gh secret set CLAUDE_CODE_OAUTH_TOKEN -R O/central      # or ANTHROPIC_API_KEY
-gh secret set OPENAI_API_KEY -R O/central
-gh secret set DEEP_ANTHROPIC_API_KEY -R O/central
-gh secret set DEEP_OPENAI_API_KEY -R O/central
+for environment in security-review security-review-deep; do
+  gh api -X PUT "repos/O/central/environments/$environment" --input - <<< '{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+  gh api -X POST "repos/O/central/environments/$environment/deployment-branch-policies" -f name=main -f type=branch
+  gh secret set APP_PRIVATE_KEY -R O/central --env "$environment" < app.private-key.pem
+  gh secret set OPENAI_API_KEY -R O/central --env "$environment"
+done
+gh secret set OAUTH_TOKEN -R O/central --env security-review    # or API_KEY
+gh secret set API_KEY -R O/central --env security-review-deep
 gh variable set SECURITY_REVIEW_APP_CLIENT_ID -R O/central --body <client id>
 ```
+
+Add a ruleset on the default branch that only administrators bypass, so nobody else can merge a workflow that would run with the keys.
 
 Then add one nightly and one deep workflow per reviewed repository. Nightly, `.github/workflows/app.yml`:
 
@@ -388,10 +393,6 @@ jobs:
       issues: write
       security-events: write
     uses: abnegate/claude-pr-owner/.github/workflows/security-review.yml@<sha>
-    secrets:
-      oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-      app_private_key: ${{ secrets.SECURITY_REVIEW_APP_PRIVATE_KEY }}
     with:
       repository: acme/app
       client_id: ${{ vars.SECURITY_REVIEW_APP_CLIENT_ID }}
@@ -421,15 +422,12 @@ jobs:
       issues: write
       security-events: write
     uses: abnegate/claude-pr-owner/.github/workflows/security-review.yml@<sha>
-    secrets:
-      api_key: ${{ secrets.DEEP_ANTHROPIC_API_KEY }}
-      openai_api_key: ${{ secrets.DEEP_OPENAI_API_KEY }}
-      app_private_key: ${{ secrets.SECURITY_REVIEW_APP_PRIVATE_KEY }}
     with:
       repository: acme/app
       client_id: ${{ vars.SECURITY_REVIEW_APP_CLIENT_ID }}
       project: projects/app.md
       mode: deep
+      environment: security-review-deep
       runner: gcrunner={0}/runner=standard/spot=false
       areas: |
         auth: src/Auth app/controllers/api/account.php
@@ -459,6 +457,7 @@ GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says,
 | `budget_usd` | `40`, or no cap for deep | Spend cap for each Claude session |
 | `runner` | `ubuntu-24.04` | `runs-on` for every job. `{0}` becomes an id unique to the run and job, as gcrunner-style self-hosted runners need |
 | `timeout_minutes` | `360`, or `7200` for deep | Timeout for each review and triage job |
+| `environment` | `security-review` | Environment every job runs in; its secrets replace the caller's |
 | `sink` | `issues` if private, else `code-scanning` | Where confirmed findings go |
 | `claude_code_version`, `codex_version` | Pinned | CLI versions |
 
