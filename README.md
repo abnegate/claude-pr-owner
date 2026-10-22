@@ -440,6 +440,14 @@ Fork pull requests never receive secrets, GitHub masks the values in logs, the m
 
 GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says, and a deep review of a large area can run longer, so give deep mode a self-hosted, non-preemptible runner. Private repositories also pay for GitHub-hosted minutes, and an organization out of them cannot start a single job, so a central repository on a self-hosted runner can set `runner` on its nightly workflows too. Self-hosted jobs run up to 5 days, which is the deep default. Artifacts between jobs are kept 7 days so a run that queues for a day still finds them.
 
+### Assignment
+
+With `assign: blame`, each new finding is assigned to the author of the last commit that changed its cited line, by GitHub's blame at the reviewed commit, when that person has write access to the reviewed repository and is not a bot. Issues are assigned as they are filed; code scanning alerts once GitHub has processed the upload. Findings with no eligible author stay unassigned. To assign findings filed before the option was set, run the same rule over every open, unassigned finding:
+
+```sh
+SINK=issues ASSIGN=blame TARGET_REPOSITORY=O/app GITHUB_TOKEN=$(gh auth token) WORK=$(mktemp -d) node security-review/report.js assign
+```
+
 ### Inputs
 
 | Input | Default | Effect |
@@ -458,6 +466,7 @@ GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says,
 | `runner` | `ubuntu-24.04` | `runs-on` for every job. `{0}` becomes an id unique to the run and job, as gcrunner-style self-hosted runners need |
 | `timeout_minutes` | `360`, or `7200` for deep | Timeout for each review and triage job |
 | `environment` | `security-review` | Environment every job runs in; its secrets replace the caller's |
+| `assign` | | `blame` assigns each new finding to whoever last changed its cited line, when they have write access and are not a bot |
 | `sink` | `issues` if private, else `code-scanning` | Where confirmed findings go |
 | `claude_code_version`, `codex_version` | Pinned | CLI versions |
 
