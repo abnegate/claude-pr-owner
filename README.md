@@ -319,6 +319,147 @@ ureview does not log in to Claude for you. `claude setup-token` is the sanctione
 - Where teammates do not trust each other with their tokens, prefer repository-level secrets, or `--visibility selected --repos …`.
 - Whether organization secrets and variables reach private repositories depends on the organization's GitHub plan. Set them per repository where they do not.
 
+## Security review
+
+`security-review.yml` is a secure code review that several models run independently, so one model catches what another misses. A triage model then confirms every finding against the code and merges duplicates.
+
+It has two modes:
+
+- **deep** reviews every area of the codebase in full. Run it once, by hand, with its own API keys and no spend cap.
+- **incremental** reviews the commits merged since the last successful run of either mode, nightly. It hands the reviewers every tracked finding so they look for siblings instead of repeats, and rechecks open findings for fixes.
+
+Tracked findings live where they are published, never in the repository:
+
+| Repository | Sink | Deduplication | Fixed findings |
+|---|---|---|---|
+| Private | Issues labelled `security-review` | Fingerprint of CWE, file, and symbol in the issue body | One comment asking a human to confirm and close |
+| Public | Code scanning alerts, visible only to maintainers | The same fingerprint as the rule id | Dropped from the next upload, so GitHub closes the alert |
+
+Public repositories' logs and artifacts are public, so no model output reaches a log: reviewers write to files, logs show counts and cost, and everything passed between jobs is encrypted with a key derived from a repository secret and the run id.
+
+### Callers
+
+Run the review from one private repository that only you can push to, not from the repositories it reviews. Every workflow on every branch of a repository can read the secrets visible to it, and an organization secret with visibility `all` is visible to every repository in the organization. Keeping the keys in a repository nobody else can push to means no one else can run code that reads them. Pick an owner whose base permission is `none`, such as your own account or an organization that grants members no access by default, so membership alone does not grant write.
+
+The central repository reaches each reviewed repository through a GitHub App. Create one with these repository permissions, install it on every repository to review, and keep its private key in the central repository:
+
+| Permission | Access | For |
+|---|---|---|
+| Contents | Read | Checking out the code |
+| Issues | Read and write | The `issues` sink on private repositories |
+| Code scanning alerts | Read and write | The `code-scanning` sink on public repositories |
+
+Store the secrets once, in the central repository:
+
+```sh
+gh secret set SECURITY_REVIEW_APP_PRIVATE_KEY -R O/central < app.private-key.pem
+gh secret set CLAUDE_CODE_OAUTH_TOKEN -R O/central      # or ANTHROPIC_API_KEY
+gh secret set OPENAI_API_KEY -R O/central
+gh secret set DEEP_ANTHROPIC_API_KEY -R O/central
+gh secret set DEEP_OPENAI_API_KEY -R O/central
+gh variable set SECURITY_REVIEW_APP_CLIENT_ID -R O/central --body <client id>
+```
+
+Then add one nightly and one deep workflow per reviewed repository. Nightly, `.github/workflows/app.yml`:
+
+```yaml
+name: app
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: app
+  cancel-in-progress: false
+
+jobs:
+  review:
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      security-events: write
+    uses: abnegate/claude-pr-owner/.github/workflows/security-review.yml@<sha>
+    secrets:
+      oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      app_private_key: ${{ secrets.SECURITY_REVIEW_APP_PRIVATE_KEY }}
+    with:
+      repository: acme/app
+      client_id: ${{ vars.SECURITY_REVIEW_APP_CLIENT_ID }}
+      project: projects/app.md
+      history: app.yml,app-deep.yml
+```
+
+Deep, `.github/workflows/app-deep.yml`:
+
+```yaml
+name: app (deep)
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: app
+  cancel-in-progress: false
+
+jobs:
+  review:
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      security-events: write
+    uses: abnegate/claude-pr-owner/.github/workflows/security-review.yml@<sha>
+    secrets:
+      api_key: ${{ secrets.DEEP_ANTHROPIC_API_KEY }}
+      openai_api_key: ${{ secrets.DEEP_OPENAI_API_KEY }}
+      app_private_key: ${{ secrets.SECURITY_REVIEW_APP_PRIVATE_KEY }}
+    with:
+      repository: acme/app
+      client_id: ${{ vars.SECURITY_REVIEW_APP_CLIENT_ID }}
+      project: projects/app.md
+      mode: deep
+      runner: gcrunner={id}/runner=standard/spot=false
+      areas: |
+        auth: src/Auth app/controllers/api/account.php
+        storage: src/Storage app/controllers/api/storage.php
+```
+
+`projects/app.md` in the central repository tells every reviewer what the system is and which defects matter most in it. Each run records the commit it reviewed, kept 90 days, and the next incremental run starts from the newest successful run of the `history` workflows, so the deep run hands over to the nightly one. The shared `concurrency` group keeps the two from running at once.
+
+Fork pull requests never receive secrets, GitHub masks the values in logs, the models' shells cannot see them, and nothing a model writes reaches a log. App tokens are minted per job, scoped to the one reviewed repository and the three permissions above, and expire within the hour.
+
+GitHub-hosted runners stop every job at 6 hours whatever `timeout_minutes` says, and a deep review of a large area can run longer, so give deep mode a self-hosted, non-preemptible runner. Self-hosted jobs run up to 5 days, which is the deep default. Artifacts between jobs are kept 7 days so a run that queues for a day still finds them.
+
+### Inputs
+
+| Input | Default | Effect |
+|---|---|---|
+| `repository` | Required | Repository to review, as `owner/name` |
+| `client_id` | | Client ID of the GitHub App. Empty uses the caller's `GITHUB_TOKEN`, which only reaches the caller's own repository |
+| `mode` | `incremental` | `incremental` or `deep` |
+| `since` | | Incremental only. Review commits after this git date instead of since the last successful run |
+| `history` | The caller | Incremental only. Workflow files in the calling repository whose last successful run starts the range |
+| `project` | `.github/security-review.md` | Path in the calling repository to the project description every reviewer reads |
+| `areas` | The whole repository | Deep only. One area per line as `name: path path ...`. Every reviewer reviews every area in its own job, all in parallel |
+| `reviewers` | `claude-opus-5-5,gpt-6.1-sol`, or `claude-fable-5-1,gpt-6.1-sol` for deep | `claude-*` runs on Claude Code, `gpt-*`, `o*`, and `codex-*` on Codex. A reviewer whose provider has no credentials is skipped with a warning |
+| `triage_model` | `claude-fable-5-1` | Confirms, merges, and deduplicates findings, and rechecks open ones |
+| `effort` | `xhigh`, or `max` for deep | Effort for every model |
+| `budget_usd` | `40`, or no cap for deep | Spend cap for each Claude session |
+| `runner` | `ubuntu-24.04` | `runs-on` for review and triage jobs. `{id}` becomes a unique id per job, as gcrunner-style runners need |
+| `timeout_minutes` | `360`, or `7200` for deep | Timeout for each review and triage job |
+| `sink` | `issues` if private, else `code-scanning` | Where confirmed findings go |
+| `claude_code_version`, `codex_version` | Pinned | CLI versions |
+
+A reviewer failure fails the run, after triage and publishing finish for the rest, so the next incremental run reviews the same range again.
+
 ## Hosting ureview
 
 ureview is an Appwrite Function (`ureview/`) backed by a public GitHub App, Ureview Code Reviewer. Its slug is `ureview-code-reviewer` because `ureview` was taken.

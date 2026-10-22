@@ -1,0 +1,769 @@
+name: ureview security review
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: Repository to review, as owner/name.
+        type: string
+        required: true
+      client_id:
+        description: >-
+          Client ID of a GitHub App installed on the repository with contents read, issues
+          write, and code scanning alerts write. Its private key is the app_private_key secret.
+          Empty uses the caller's GITHUB_TOKEN, which only reaches the caller's own repository.
+        type: string
+        default: ''
+      mode:
+        description: >-
+          incremental reviews the commits merged since the last successful run.
+          deep reviews every area of the codebase in full, once, regardless of cost.
+        type: string
+        default: incremental
+      since:
+        description: >-
+          Incremental only. Review commits merged after this git date instead of
+          since the last successful run.
+        type: string
+        default: ''
+      history:
+        description: >-
+          Incremental only. Comma-separated workflow files whose last successful run
+          starts the range, such as the deep review's caller. Empty uses the caller.
+        type: string
+        default: ''
+      project:
+        description: >-
+          Path, in the calling repository, to a Markdown file describing the reviewed
+          system and the defects that matter most in it.
+        type: string
+        default: .github/security-review.md
+      areas:
+        description: >-
+          Deep only. One area per line as 'name: path path ...'. Each area is reviewed by
+          every reviewer in its own job. Empty reviews the repository as one area.
+        type: string
+        default: ''
+      reviewers:
+        description: >-
+          Comma-separated models that review independently. claude-* runs on Claude Code,
+          gpt-*, o* and codex-* on Codex. Empty uses claude-opus-5-5,gpt-6.1-sol for
+          incremental and claude-fable-5-1,gpt-6.1-sol for deep.
+        type: string
+        default: ''
+      triage_model:
+        description: Model that confirms, merges, and deduplicates the reviewers' findings.
+        type: string
+        default: claude-fable-5-1
+      effort:
+        description: Effort for every model. Empty uses xhigh for incremental and max for deep.
+        type: string
+        default: ''
+      budget_usd:
+        description: >-
+          Spend cap for each Claude session. Empty uses 40 for incremental and no cap for deep.
+        type: string
+        default: ''
+      runner:
+        description: >-
+          runs-on label for the review and triage jobs. {id} becomes a unique id per job,
+          for runners such as gcrunner that need one. GitHub-hosted runners stop every job
+          at 6 hours, so give a deep review of a large area a self-hosted runner.
+        type: string
+        default: ubuntu-24.04
+      timeout_minutes:
+        description: >-
+          Timeout for each review and triage job. Empty uses 360 for incremental and
+          7200, the self-hosted maximum, for deep.
+        type: string
+        default: ''
+      sink:
+        description: >-
+          Where confirmed findings go: issues or code-scanning. Empty uses issues for
+          private repositories and code-scanning for public ones, whose issues are public.
+        type: string
+        default: ''
+      claude_code_version:
+        type: string
+        default: 2.1.308
+      codex_version:
+        type: string
+        default: 0.163.0
+    secrets:
+      oauth_token:
+        required: false
+      api_key:
+        required: false
+      openai_api_key:
+        required: false
+      app_private_key:
+        required: false
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      security-events: read
+    outputs:
+      changed: ${{ steps.plan.outputs.changed }}
+      head: ${{ steps.plan.outputs.head }}
+      sink: ${{ steps.plan.outputs.sink }}
+      effort: ${{ steps.plan.outputs.effort }}
+      budget: ${{ steps.plan.outputs.budget }}
+      timeout: ${{ steps.plan.outputs.timeout }}
+      reviews: ${{ steps.plan.outputs.reviews }}
+      areas: ${{ steps.plan.outputs.areas }}
+      triage_provider: ${{ steps.plan.outputs.triage_provider }}
+      owner: ${{ steps.target.outputs.owner }}
+      name: ${{ steps.target.outputs.name }}
+      branch: ${{ steps.plan.outputs.branch }}
+    steps:
+      - name: Resolve repository
+        id: target
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+        run: |
+          if [[ ! "$REPOSITORY" =~ ^([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)$ ]]; then
+            echo "::error::repository must be owner/name, not '$REPOSITORY'."
+            exit 1
+          fi
+          {
+            echo "owner=${BASH_REMATCH[1]}"
+            echo "name=${BASH_REMATCH[2]}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create token
+        id: token
+        if: inputs.client_id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-security-events: write
+
+      - name: Check out caller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: caller
+          persist-credentials: false
+
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ steps.token.outputs.token || github.token }}
+          path: repository
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out ureview
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ureview
+          persist-credentials: false
+
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_TOKEN: ${{ steps.token.outputs.token || github.token }}
+          TARGET: ${{ inputs.repository }}
+          MODE: ${{ inputs.mode }}
+          SINCE: ${{ inputs.since }}
+          HISTORY: ${{ inputs.history }}
+          PROJECT: ${{ inputs.project }}
+          AREAS: ${{ inputs.areas }}
+          REVIEWERS: ${{ inputs.reviewers }}
+          TRIAGE_MODEL: ${{ inputs.triage_model }}
+          EFFORT: ${{ inputs.effort }}
+          BUDGET: ${{ inputs.budget_usd }}
+          SINK_INPUT: ${{ inputs.sink }}
+          RUNNER: ${{ inputs.runner }}
+          TIMEOUT: ${{ inputs.timeout_minutes }}
+          HAS_ANTHROPIC: ${{ secrets.oauth_token != '' || secrets.api_key != '' }}
+          HAS_OPENAI: ${{ secrets.openai_api_key != '' }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/security-review"
+          mkdir -p "$work"
+          export WORK="$work"
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          provider_of() {
+            case "$1" in
+              claude-*) echo anthropic ;;
+              gpt-*|o[0-9]*|codex-*) echo openai ;;
+              *) echo '' ;;
+            esac
+          }
+
+          has_credentials() {
+            case "$1" in
+              anthropic) [[ "$HAS_ANTHROPIC" == true ]] ;;
+              openai) [[ "$HAS_OPENAI" == true ]] ;;
+              *) return 1 ;;
+            esac
+          }
+
+          case "$MODE" in
+            incremental)
+              reviewers=${REVIEWERS:-claude-opus-5-5,gpt-6.1-sol}
+              effort=${EFFORT:-xhigh}
+              budget=${BUDGET:-40}
+              timeout=${TIMEOUT:-360}
+              ;;
+            deep)
+              reviewers=${REVIEWERS:-claude-fable-5-1,gpt-6.1-sol}
+              effort=${EFFORT:-max}
+              budget=${BUDGET:-}
+              timeout=${TIMEOUT:-7200}
+              ;;
+            *)
+              fail "mode must be incremental or deep, not '$MODE'."
+              ;;
+          esac
+          case "$effort" in
+            low|medium|high|xhigh|max) ;;
+            *) fail "effort must be low, medium, high, xhigh, or max, not '$effort'." ;;
+          esac
+          [[ -z "$budget" || "$budget" =~ ^[0-9]+(\.[0-9]+)?$ ]] || fail "budget_usd must be a number, not '$budget'."
+          [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || fail "timeout_minutes must be a whole number of minutes, not '$timeout'."
+          [[ -n "$RUNNER" ]] || fail 'runner must not be empty.'
+
+          selected='[]'
+          IFS=',' read -ra models <<< "$reviewers"
+          for model in "${models[@]}"; do
+            model="${model//[[:space:]]/}"
+            [[ -n "$model" ]] || continue
+            [[ "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "'$model' is not a valid model id."
+            provider=$(provider_of "$model")
+            [[ -n "$provider" ]] || fail "No provider runs '$model'. Use a claude-*, gpt-*, o*, or codex-* model."
+            if ! has_credentials "$provider"; then
+              echo "::warning::No $provider credentials are set, so $model does not review this run."
+              continue
+            fi
+            selected=$(jq -c --arg model "$model" --arg provider "$provider" '. + [{model: $model, provider: $provider}]' <<< "$selected")
+          done
+          [[ "$(jq length <<< "$selected")" -gt 0 ]] || fail 'No reviewer has credentials. Pass oauth_token, api_key, or openai_api_key.'
+
+          [[ "$TRIAGE_MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "'$TRIAGE_MODEL' is not a valid model id."
+          triage_provider=$(provider_of "$TRIAGE_MODEL")
+          [[ -n "$triage_provider" ]] || fail "No provider runs '$TRIAGE_MODEL'."
+          has_credentials "$triage_provider" || fail "No $triage_provider credentials are set for the triage model $TRIAGE_MODEL."
+
+          sink=$SINK_INPUT
+          if [[ -z "$sink" ]]; then
+            if [[ "$(GH_TOKEN="$TARGET_TOKEN" gh api "repos/$TARGET" --jq .private)" == true ]]; then
+              sink=issues
+            else
+              sink=code-scanning
+            fi
+          fi
+          [[ "$sink" == issues || "$sink" == code-scanning ]] || fail "sink must be issues or code-scanning, not '$sink'."
+
+          cd repository
+          head=$(git rev-parse HEAD)
+          {
+            echo "head=$head"
+            echo "branch=$(git rev-parse --abbrev-ref HEAD)"
+            echo "sink=$sink"
+            echo "effort=$effort"
+            echo "budget=$budget"
+            echo "timeout=$timeout"
+            echo "triage_provider=$triage_provider"
+          } >> "$GITHUB_OUTPUT"
+
+          areas=''
+          if [[ "$MODE" == incremental ]]; then
+            base=''
+            if [[ -z "$SINCE" ]]; then
+              newest=''
+              IFS=',' read -ra workflows <<< "${HISTORY:-$(basename "${GITHUB_WORKFLOW_REF%@*}")}"
+              for workflow in "${workflows[@]}"; do
+                workflow="${workflow//[[:space:]]/}"
+                [[ -n "$workflow" ]] || continue
+                run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch "$GITHUB_REF_NAME" --status success --limit 1 --json createdAt,databaseId --jq '.[0] | select(.) | "\(.createdAt) \(.databaseId)"' || true)
+                if [[ -n "$run" && "$run" > "$newest" ]]; then
+                  newest=$run
+                fi
+              done
+              if [[ -n "$newest" ]] && gh run download "${newest#* }" --repo "$GITHUB_REPOSITORY" --name security-review-head --dir "$RUNNER_TEMP/previous" > /dev/null 2>&1; then
+                previous=$(tr -dc '0-9a-f' < "$RUNNER_TEMP/previous/head")
+                if git merge-base --is-ancestor "$previous" "$head" 2> /dev/null; then
+                  base=$previous
+                fi
+              fi
+            fi
+            if [[ -z "$base" ]]; then
+              base=$(git rev-list -1 --first-parent --before="${SINCE:-24 hours ago}" HEAD)
+            fi
+            base=${base:-$(git rev-list --max-parents=0 HEAD | tail -1)}
+            if [[ "$base" == "$head" ]]; then
+              echo "No commits merged since $base."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            {
+              echo '## Scope'
+              echo
+              echo "- Reviewed commit: $head"
+              echo "- Changes: \`git diff $base $head\`"
+              echo
+              echo '### Commits'
+              echo
+              git log --first-parent --format='- %h %s' "$base..$head"
+              echo
+              echo '### Changed files'
+              echo
+              git diff --name-only "$base" "$head" | sed 's/^/- /'
+              echo
+            } > "$work/scope.md"
+            echo "Reviewing $(git rev-list --count --first-parent "$base..$head") commits in $base..$head."
+          else
+            areas=$AREAS
+            echo "Reviewing the repository in full at $head."
+          fi
+          cd ..
+
+          if [[ -f "caller/$PROJECT" ]]; then
+            cp "caller/$PROJECT" "$work/project.md"
+          else
+            echo "::warning::$PROJECT does not exist, so reviewers get no project description."
+            echo 'No project description was provided.' > "$work/project.md"
+          fi
+
+          SINK="$sink" GITHUB_TOKEN="$TARGET_TOKEN" TARGET_REPOSITORY="$TARGET" node ureview/security-review/report.js known
+          printf '%s\n' "$areas" > "$work/areas.txt"
+          node ureview/security-review/report.js areas "$work/areas.txt"
+
+          runner_for() {
+            printf '%s' "${RUNNER//\{id\}/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-security-review-$1}"
+          }
+          reviews='[]'
+          while read -r review; do
+            label=$(runner_for "$(jq -r '"review-\(.area)-\(.slot)"' <<< "$review")")
+            reviews=$(jq -c --argjson review "$review" --arg runner "$label" '. + [$review + {runner: $runner}]' <<< "$reviews")
+          done < <(jq -c --argjson reviewers "$selected" '.[] as $area | $reviewers | to_entries[] | {area: $area.index, name: $area.name, slot: .key, model: .value.model, provider: .value.provider}' "$work/areas.json")
+          triages='[]'
+          while read -r area; do
+            triages=$(jq -c --argjson area "$area" --arg runner "$(runner_for "triage-$area")" '. + [{area: $area, runner: $runner}]' <<< "$triages")
+          done < <(jq -r '.[].index' "$work/areas.json")
+          {
+            echo "reviews=$reviews"
+            echo "areas=$triages"
+            echo "changed=true"
+          } >> "$GITHUB_OUTPUT"
+          echo "Planned $(jq length <<< "$reviews") reviews across $(jq length "$work/areas.json") areas."
+
+      - name: Record the reviewed commit
+        if: steps.plan.outputs.head != ''
+        env:
+          HEAD_SHA: ${{ steps.plan.outputs.head }}
+        run: printf '%s\n' "$HEAD_SHA" > "$RUNNER_TEMP/head"
+
+      - name: Upload the reviewed commit
+        if: steps.plan.outputs.head != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-review-head
+          path: ${{ runner.temp }}/head
+          retention-days: 90
+
+      - name: Pack context
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+        run: ureview/security-review/artifact.sh pack "$RUNNER_TEMP/security-review" "$RUNNER_TEMP/context.enc"
+
+      - name: Upload context
+        if: steps.plan.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-review-context
+          path: ${{ runner.temp }}/context.enc
+          retention-days: 7
+
+  review:
+    name: Review ${{ matrix.name }} with ${{ matrix.model }}
+    needs: plan
+    if: needs.plan.outputs.changed == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.reviews) }}
+    env:
+      EFFORT: ${{ needs.plan.outputs.effort }}
+      BUDGET: ${{ needs.plan.outputs.budget }}
+      MODE: ${{ inputs.mode }}
+      HEAD_SHA: ${{ needs.plan.outputs.head }}
+    steps:
+      - name: Create token
+        id: token
+        if: inputs.client_id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ needs.plan.outputs.owner }}
+          repositories: ${{ needs.plan.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-security-events: write
+
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ steps.token.outputs.token || github.token }}
+          path: repository
+          ref: ${{ needs.plan.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out ureview
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ureview
+          persist-credentials: false
+
+      - name: Download context
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: security-review-context
+          path: ${{ runner.temp }}
+
+      - name: Unpack context
+        env:
+          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+        run: |
+          ureview/security-review/artifact.sh unpack "$RUNNER_TEMP/context.enc" "$RUNNER_TEMP/security-review"
+          echo "WORK=$RUNNER_TEMP/security-review" >> "$GITHUB_ENV"
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+
+      - name: Install Claude Code
+        if: matrix.provider == 'anthropic'
+        env:
+          VERSION: ${{ inputs.claude_code_version }}
+        run: npm install --global --no-audit --no-fund "@anthropic-ai/claude-code@$VERSION"
+
+      - name: Install Codex
+        if: matrix.provider == 'openai'
+        env:
+          VERSION: ${{ inputs.codex_version }}
+        run: |
+          npm install --global --no-audit --no-fund "@openai/codex@$VERSION"
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns > /dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Write prompt
+        env:
+          AREA: ${{ matrix.area }}
+          NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          {
+            cat ureview/security-review/review.md
+            echo '## Project'
+            echo
+            cat "$WORK/project.md"
+            echo
+            if [[ "$MODE" == incremental ]]; then
+              cat "$WORK/scope.md"
+            else
+              echo '## Scope'
+              echo
+              echo "- Reviewed commit: $HEAD_SHA"
+              echo "- Area: $NAME"
+              echo "- Paths: $(jq -r '.paths | join(", ")' "$WORK/areas/$AREA.json")"
+              echo
+            fi
+            echo '## Tracked'
+            echo
+            cat "$WORK/areas/$AREA.md"
+          } > "$WORK/review-prompt.md"
+
+      - name: Review
+        working-directory: repository
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.provider == 'anthropic' && secrets.oauth_token || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.provider == 'anthropic' && secrets.api_key || '' }}
+          CODEX_API_KEY: ${{ matrix.provider == 'openai' && secrets.openai_api_key || '' }}
+          PROVIDER: ${{ matrix.provider }}
+          MODEL: ${{ matrix.model }}
+        run: ../ureview/security-review/run.sh "$PROVIDER" "$MODEL" "$WORK/review-prompt.md" ../ureview/security-review/findings.json "$WORK/raw.json"
+
+      - name: Collect findings
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          MODEL: ${{ matrix.model }}
+          AREA: ${{ matrix.area }}
+          SLOT: ${{ matrix.slot }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/review"
+          node ureview/security-review/report.js collect "$PROVIDER" "$WORK/raw.json" "$RUNNER_TEMP/review/$AREA-$SLOT.json" "$MODEL" review
+
+      - name: Pack findings
+        env:
+          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+        run: ureview/security-review/artifact.sh pack "$RUNNER_TEMP/review" "$RUNNER_TEMP/review.enc"
+
+      - name: Upload findings
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-review-review-${{ matrix.area }}-${{ matrix.slot }}
+          path: ${{ runner.temp }}/review.enc
+          retention-days: 7
+
+  triage:
+    name: Triage area ${{ matrix.area }}
+    needs: [plan, review]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.changed == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.areas) }}
+    env:
+      EFFORT: ${{ needs.plan.outputs.effort }}
+      BUDGET: ${{ needs.plan.outputs.budget }}
+      MODE: ${{ inputs.mode }}
+      HEAD_SHA: ${{ needs.plan.outputs.head }}
+      PROVIDER: ${{ needs.plan.outputs.triage_provider }}
+      MODEL: ${{ inputs.triage_model }}
+      AREA: ${{ matrix.area }}
+    steps:
+      - name: Create token
+        id: token
+        if: inputs.client_id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ needs.plan.outputs.owner }}
+          repositories: ${{ needs.plan.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-security-events: write
+
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ steps.token.outputs.token || github.token }}
+          path: repository
+          ref: ${{ needs.plan.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out ureview
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ureview
+          persist-credentials: false
+
+      - name: Download context
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: security-review-context
+          path: ${{ runner.temp }}
+
+      - name: Download findings
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: security-review-review-${{ matrix.area }}-*
+          path: ${{ runner.temp }}/reviews
+
+      - name: Unpack
+        env:
+          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+        run: |
+          set -euo pipefail
+          ureview/security-review/artifact.sh unpack "$RUNNER_TEMP/context.enc" "$RUNNER_TEMP/security-review"
+          echo "WORK=$RUNNER_TEMP/security-review" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/review"
+          for file in "$RUNNER_TEMP"/reviews/*/review.enc; do
+            [[ -f "$file" ]] || continue
+            ureview/security-review/artifact.sh unpack "$file" "$RUNNER_TEMP/review"
+          done
+
+      - name: Merge candidates
+        id: candidates
+        run: node ureview/security-review/report.js candidates "$RUNNER_TEMP/review" "$AREA"
+
+      - name: Set up Node
+        if: steps.candidates.outputs.triage == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+
+      - name: Install Claude Code
+        if: steps.candidates.outputs.triage == 'true' && env.PROVIDER == 'anthropic'
+        env:
+          VERSION: ${{ inputs.claude_code_version }}
+        run: npm install --global --no-audit --no-fund "@anthropic-ai/claude-code@$VERSION"
+
+      - name: Install Codex
+        if: steps.candidates.outputs.triage == 'true' && env.PROVIDER == 'openai'
+        env:
+          VERSION: ${{ inputs.codex_version }}
+        run: |
+          npm install --global --no-audit --no-fund "@openai/codex@$VERSION"
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns > /dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Write prompt
+        if: steps.candidates.outputs.triage == 'true'
+        run: |
+          set -euo pipefail
+          {
+            cat ureview/security-review/triage.md
+            echo '## Project'
+            echo
+            cat "$WORK/project.md"
+            echo
+            if [[ "$MODE" == incremental ]]; then
+              cat "$WORK/scope.md"
+            else
+              echo '## Scope'
+              echo
+              echo "- Reviewed commit: $HEAD_SHA"
+              echo "- Area: $(jq -r .name "$WORK/areas/$AREA.json")"
+              echo "- Paths: $(jq -r '.paths | join(", ")' "$WORK/areas/$AREA.json")"
+              echo
+            fi
+            echo "- Working directory: $WORK"
+          } > "$WORK/triage-prompt.md"
+
+      - name: Triage
+        if: steps.candidates.outputs.triage == 'true'
+        working-directory: repository
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ needs.plan.outputs.triage_provider == 'anthropic' && secrets.oauth_token || '' }}
+          ANTHROPIC_API_KEY: ${{ needs.plan.outputs.triage_provider == 'anthropic' && secrets.api_key || '' }}
+          CODEX_API_KEY: ${{ needs.plan.outputs.triage_provider == 'openai' && secrets.openai_api_key || '' }}
+        run: ../ureview/security-review/run.sh "$PROVIDER" "$MODEL" "$WORK/triage-prompt.md" ../ureview/security-review/triage.json "$WORK/raw.json"
+
+      - name: Collect triage
+        env:
+          TRIAGE: ${{ steps.candidates.outputs.triage }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/triage"
+          if [[ "$TRIAGE" == true ]]; then
+            node ureview/security-review/report.js collect "$PROVIDER" "$WORK/raw.json" "$RUNNER_TEMP/triage/$AREA.json" "$MODEL" triage
+          else
+            jq -n --arg model "$MODEL" '{model: $model, findings: [], resolved: []}' > "$RUNNER_TEMP/triage/$AREA.json"
+          fi
+
+      - name: Pack triage
+        env:
+          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+        run: ureview/security-review/artifact.sh pack "$RUNNER_TEMP/triage" "$RUNNER_TEMP/triage.enc"
+
+      - name: Upload triage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-review-triage-${{ matrix.area }}
+          path: ${{ runner.temp }}/triage.enc
+          retention-days: 7
+
+  publish:
+    name: Publish
+    needs: [plan, triage]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      security-events: write
+    env:
+      SINK: ${{ needs.plan.outputs.sink }}
+      HEAD_SHA: ${{ needs.plan.outputs.head }}
+    steps:
+      - name: Create token
+        id: token
+        if: inputs.client_id != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ needs.plan.outputs.owner }}
+          repositories: ${{ needs.plan.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-security-events: write
+
+      - name: Check out ureview
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ureview
+          persist-credentials: false
+
+      - name: Download context
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: security-review-context
+          path: ${{ runner.temp }}
+
+      - name: Download triage
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: security-review-triage-*
+          path: ${{ runner.temp }}/triages
+
+      - name: Unpack
+        env:
+          ARTIFACT_SECRET_KEY: ${{ secrets.api_key || secrets.oauth_token || secrets.openai_api_key }}
+        run: |
+          set -euo pipefail
+          ureview/security-review/artifact.sh unpack "$RUNNER_TEMP/context.enc" "$RUNNER_TEMP/security-review"
+          echo "WORK=$RUNNER_TEMP/security-review" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/triage"
+          for file in "$RUNNER_TEMP"/triages/*/triage.enc; do
+            [[ -f "$file" ]] || continue
+            ureview/security-review/artifact.sh unpack "$file" "$RUNNER_TEMP/triage"
+          done
+
+      - name: Publish findings
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token || github.token }}
+          TARGET_REPOSITORY: ${{ inputs.repository }}
+          BRANCH: ${{ needs.plan.outputs.branch }}
+        run: node ureview/security-review/report.js publish "$RUNNER_TEMP/triage"

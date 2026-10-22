@@ -17,6 +17,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y python3-yaml
       - name: Run planner tests
         run: bash test/plan.sh
+      - name: Run security review tests
+        run: bash test/security-review.sh
       # Pinned so a new release cannot change the lint rules under an unchanged workflow.
       - name: Install actionlint
         run: |
@@ -24,7 +26,7 @@ jobs:
           curl -fsSL -o /tmp/actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/${version}/actionlint_${version#v}_linux_amd64.tar.gz"
           tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
       - name: Lint workflows
-        run: /tmp/actionlint -shellcheck= .github/workflows/orchestrator.yml .github/workflows/owner.yml .github/workflows/test.yml
+        run: /tmp/actionlint -shellcheck= .github/workflows/orchestrator.yml .github/workflows/owner.yml .github/workflows/security-review.yml .github/workflows/test.yml
   ureview:
     runs-on: ubuntu-latest
     defaults:
